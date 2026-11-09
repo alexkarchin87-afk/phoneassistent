@@ -1,0 +1,5 @@
+plugins { id 'com.android.application' }
+android { namespace 'com.vanya.shield'; compileSdk 35
+  defaultConfig { applicationId 'com.vanya.shield'; minSdk 29; targetSdk 35; versionCode 2; versionName '0.2.1-beta' }
+  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}

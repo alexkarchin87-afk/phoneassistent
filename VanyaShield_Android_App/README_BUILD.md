@@ -1,0 +1,1 @@
+VanyaShield Android Beta GitHub Actions build (isolated branch). This is a lean reproducible build of the unified security dashboard. No internet permission and no background scan. Requires Termux, PCAPdroid, SharkDroid, Rethink separately. Built debug APK is for testing only. Source archive from previous chat contains richer UI and docs.
