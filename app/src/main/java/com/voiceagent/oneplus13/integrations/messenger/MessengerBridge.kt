@@ -58,7 +58,7 @@ class MessengerBridge(
 
     private suspend fun pollMaxLoop() {
         while (polling) {
-            max.pollUpdates().forEach(::publishInbound)
+            max.pollUpdates().forEach { publishInbound(it) }
             delay(3000)
         }
     }

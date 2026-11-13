@@ -25,7 +25,7 @@ class WorkflowRunner(
         data class Failed(val block: WorkflowBlock, val reason: String) : StepResult()
     }
 
-    suspend fun run(workflow: Workflow, onStep: (StepResult) -> Unit = {}) {
+    suspend fun run(workflow: Workflow, onStep: suspend (StepResult) -> Unit = {}) {
         var current = workflow.startBlock()
         var stepsRun = 0
         val visited = mutableSetOf<String>()

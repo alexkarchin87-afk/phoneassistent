@@ -705,7 +705,7 @@ class AgentOrchestrator(
 
     /** "Что за музыка играет" — берёт метаданные из активной медиасессии, какое бы
      *  приложение сейчас ни играло (не только Яндекс Музыка). */
-    private fun handleNowPlaying() {
+    private suspend fun handleNowPlaying() {
         val track = systemController.nowPlaying()
         if (track == null) {
             tts.speak(
