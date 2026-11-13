@@ -16,6 +16,9 @@ import com.voiceagent.oneplus13.overlay.OverlayBubbleController
 import com.voiceagent.oneplus13.ui.UiPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -41,12 +44,12 @@ class VoiceAgentService : Service() {
 
     private lateinit var stt: STTEngine
     private lateinit var tts: TTSEngine
-    private lateinit var orchestrator: AgentOrchestrator
+    private lateinit var orchestrator: Deferred<AgentOrchestrator>
     private lateinit var uiPrefs: UiPreferences
 
     private var overlay: OverlayBubbleController? = null
     private var conversationActiveUntil = 0L
-    private var initFailed = false
+    @Volatile private var initFailed = false
 
     override fun onCreate() {
         super.onCreate()
@@ -54,8 +57,17 @@ class VoiceAgentService : Service() {
         try {
             stt = STTEngine(applicationContext)
             tts = TTSEngine(applicationContext)
-            orchestrator = AgentOrchestrator(applicationContext, LLMClient(applicationContext), tts, scope)
             uiPrefs = UiPreferences(applicationContext)
+            orchestrator = scope.async(Dispatchers.IO) {
+                try {
+                    AgentOrchestrator(applicationContext, LLMClient(applicationContext), tts, scope)
+                } catch (error: Exception) {
+                    initFailed = true
+                    android.util.Log.e("VoiceAgentService", "Orchestrator initialization failed", error)
+                    stopSelf()
+                    throw error
+                }
+            }
         } catch (error: Exception) {
             initFailed = true
             android.util.Log.e("VoiceAgentService", "Initialization failed", error)
@@ -103,7 +115,7 @@ class VoiceAgentService : Service() {
                     val cleaned = stripWakeWord(transcript)
                     if (cleaned.isNotBlank()) {
                         AgentEventBus.publish(AgentEvent.Heard(cleaned))
-                        orchestrator.handleTranscript(cleaned)
+                        orchestrator.await().handleTranscript(cleaned)
                     }
                 }
             }
@@ -152,7 +164,7 @@ class VoiceAgentService : Service() {
         overlay = OverlayBubbleController(
             context = applicationContext,
             scope = scope,
-            onSendText = { text -> scope.launch { orchestrator.handleTranscript(text) } }
+            onSendText = { text -> scope.launch { orchestrator.await().handleTranscript(text) } }
         ).also {
             // По умолчанию пузырь появляется только по будильному слову
             // (flashOnWake из startListeningLoop). Явная настройка "показывать
@@ -173,7 +185,7 @@ class VoiceAgentService : Service() {
      */
     inner class LocalBinder : Binder() {
         fun sendText(text: String) {
-            scope.launch { orchestrator.handleTranscript(text) }
+            scope.launch { orchestrator.await().handleTranscript(text) }
         }
 
         fun setOverlayEnabled(enabled: Boolean) = this@VoiceAgentService.setOverlayEnabled(enabled)

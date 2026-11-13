@@ -28,6 +28,7 @@ import com.voiceagent.oneplus13.workflow.Workflow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import android.os.SystemClock
@@ -244,6 +245,8 @@ class AgentOrchestrator(
                 remember(ChatMessage("assistant", reply))
                 AgentEventBus.publish(AgentEvent.Reply(reply))
                 tts.speak(reply)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 AgentEventBus.publish(AgentEvent.Error("Не удалось спросить Claude", t))
                 tts.speak("Не получилось спросить Claude — проверь ключ в Настройках.")
@@ -269,6 +272,8 @@ class AgentOrchestrator(
                 AgentEventBus.publish(AgentEvent.Reply(reply))
                 tts.speak(reply)
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
             AgentEventBus.publish(AgentEvent.Error("Не удалось обработать команду", t))
             tts.speak("Что-то пошло не так, попробуй ещё раз.")
