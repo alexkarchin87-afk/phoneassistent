@@ -5,6 +5,7 @@ import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.buffer
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -33,23 +34,32 @@ class STTEngine(private val context: Context) {
     }
 
     /** Continuous partial+final recognition as a cold Flow; cancel the collector to stop listening. */
-    fun listen(): Flow<String> = callbackFlow {
+    fun listen(acceptTranscript: () -> Boolean = { true }): Flow<String> = callbackFlow {
         val currentModel = model ?: throw IllegalStateException("Call ensureModel() first")
         val recognizer = Recognizer(currentModel, 16000.0f)
         val service = SpeechService(recognizer, 16000.0f)
         speechService = service
 
         service.startListening(object : RecognitionListener {
-            override fun onPartialResult(hypothesis: String?) { /* ignored: UI only needs finals */ }
+            // If TTS overlapped an utterance, discard its entire final result even
+            // if recognition finishes after the output gate has reopened.
+            private var contaminated = false
+            override fun onPartialResult(hypothesis: String?) {
+                if (!acceptTranscript()) contaminated = true
+            }
 
             override fun onResult(hypothesis: String?) {
                 val text = hypothesis?.let { JSONObject(it).optString("text") }.orEmpty()
-                if (text.isNotBlank()) trySend(text)
+                if (!acceptTranscript()) contaminated = true
+                if (text.isNotBlank() && !contaminated) trySend(text)
+                contaminated = false
             }
 
             override fun onFinalResult(hypothesis: String?) {
                 val text = hypothesis?.let { JSONObject(it).optString("text") }.orEmpty()
-                if (text.isNotBlank()) trySend(text)
+                if (!acceptTranscript()) contaminated = true
+                if (text.isNotBlank() && !contaminated) trySend(text)
+                contaminated = false
             }
 
             override fun onError(exception: Exception?) {
@@ -63,7 +73,7 @@ class STTEngine(private val context: Context) {
             service.stop()
             service.shutdown()
         }
-    }
+    }.buffer(0)
 
     fun stop() {
         speechService?.stop()
@@ -71,3 +81,4 @@ class STTEngine(private val context: Context) {
         speechService = null
     }
 }
+

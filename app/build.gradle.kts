@@ -23,9 +23,9 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        buildConfigField("String", "DEEPSEEK_API_KEY", "\"${localProps.getProperty("DEEPSEEK_API_KEY", "")}\"")
-        buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"${localProps.getProperty("TELEGRAM_BOT_TOKEN", "")}\"")
-        buildConfigField("String", "MAX_SERVICE_TOKEN", "\"${localProps.getProperty("MAX_SERVICE_TOKEN", "")}\"")
+        buildConfigField("String", "DEEPSEEK_API_KEY", "\"\"")
+        buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"\"")
+        buildConfigField("String", "MAX_SERVICE_TOKEN", "\"\"")
         buildConfigField("String", "MAX_COMMUNITY_ID", "\"${localProps.getProperty("MAX_COMMUNITY_ID", "")}\"")
     }
 
@@ -81,3 +81,4 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.play.services.auth)
 }
+

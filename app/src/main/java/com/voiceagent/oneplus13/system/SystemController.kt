@@ -63,7 +63,11 @@ class SystemController(private val context: Context) {
     }
 
     fun openUrl(url: String) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        val uri = Uri.parse(url)
+        require(uri.scheme?.lowercase() in setOf("http", "https") && !uri.host.isNullOrBlank()) {
+            "Only http and https links are supported"
+        }
+        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
@@ -189,3 +193,4 @@ class SystemController(private val context: Context) {
         )
     }
 }
+

@@ -38,18 +38,7 @@ class BackupManager(private val context: Context) {
         root.put("format_version", 2)
         root.put("exported_at", System.currentTimeMillis())
 
-        val secretsJson = JSONObject()
-        listOf(
-            SecretsStore.KEY_DEEPSEEK_API_KEY,
-            SecretsStore.KEY_CLAUDE_API_KEY,
-            SecretsStore.KEY_TELEGRAM_BOT_TOKEN,
-            SecretsStore.KEY_MAX_SERVICE_TOKEN
-        ).forEach { key -> secrets.get(key)?.let { secretsJson.put(key, it) } }
-        root.put("secrets", secretsJson)
-
-        val projectSecretsJson = JSONObject()
-        secrets.projectSecretKeys().forEach { key -> secrets.get(key)?.let { projectSecretsJson.put(key, it) } }
-        root.put("project_secrets", projectSecretsJson)
+        // Never export API keys or generated project secrets in plaintext.
 
         // v2: факты с приоритетом (было — просто массив строк в "memory_facts";
         // тот старый формат по-прежнему читается при импорте, см. ниже).
@@ -71,7 +60,7 @@ class BackupManager(private val context: Context) {
         uiJson.put("overlay_always_visible", prefs.overlayAlwaysVisible)
         root.put("ui_preferences", uiJson)
 
-        val file = File(context.filesDir, "voiceagent_backup.json")
+        val file = File(context.cacheDir, "voiceagent_backup.json")
         file.writeText(root.toString(2))
         return file
     }
@@ -126,3 +115,4 @@ class BackupManager(private val context: Context) {
         }
     }
 }
+

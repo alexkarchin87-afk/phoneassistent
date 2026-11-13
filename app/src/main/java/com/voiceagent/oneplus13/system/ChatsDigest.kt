@@ -1,50 +1,38 @@
 package com.voiceagent.oneplus13.system
 
 import android.content.Context
-import android.content.pm.PackageManager
 import com.voiceagent.oneplus13.core.LLMClient
 
-/**
- * "Всеядный штурман уведомлений" — на "что нового?"/"прочитай уведомления"
- * берёт всё, что накопилось в [NotificationBuffer] с прошлого раза, и просит
- * LLM выдать 1-2 короткие фразы понятным языком: суть переписки/письма/лобби
- * в игре и есть ли что-то, требующее внимания пользователя. Флуд — не пересказывает.
- */
+/** A local-only digest. Notification content must never be sent to an LLM here. */
 class ChatsDigest(private val context: Context, private val llm: LLMClient) {
-
-    private var lastDigestAtMillis: Long = 0L
-
-    private val prompt = """
-        Тебе дан список уведомлений из шторки телефона подростка (Telegram,
-        WhatsApp, Gmail, GitHub, игры вроде Standoff 2/Minecraft и т.п.).
-        Кратко перескажи суть в 1-2 коротких фразах на понятном подростку языке:
-        о чём договорились в переписке, какой баг завели на GitHub, какое пришло
-        письмо, зовут ли в лобби в игре. Отдельно отметь, если есть что-то,
-        адресованное лично пользователю или требующее его действия. Весь флуд
-        игнорируй. Если ничего важного нет, ответь ровно: "Там просто флудят,
-        ничего важного".
-    """.trimIndent()
+    private var lastDigestAtMillis = 0L
 
     suspend fun summarizeSinceLastDigest(): String {
+        val now = System.currentTimeMillis()
         val entries = NotificationBuffer.entriesSince(lastDigestAtMillis)
-        lastDigestAtMillis = System.currentTimeMillis()
-        if (entries.isEmpty()) return "Новых уведомлений с прошлого раза нет."
-
-        val formatted = entries.joinToString("\n") { e ->
-            "${friendlyAppName(e.packageName)}: ${e.title} — ${e.text}"
-        }.take(MAX_DIGEST_INPUT_CHARS)
-
-        return llm.complete(prompt, emptyList(), formatted)
-    }
-
-    private fun friendlyAppName(packageName: String): String = try {
-        val pm = context.packageManager
-        pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
-    } catch (_: PackageManager.NameNotFoundException) {
-        packageName
+            .filter { it.packageName in ALLOWED_PACKAGES }
+            .filterNot { SENSITIVE.containsMatchIn(it.title + " " + it.text) }
+            .takeLast(4)
+        lastDigestAtMillis = now
+        if (entries.isEmpty()) return "Новых доступных уведомлений нет."
+        // Announce only the source and count. Message bodies may contain private data.
+        val counts = entries.groupingBy { it.packageName }.eachCount()
+        return counts.entries.joinToString(". ") { (pkg, count) ->
+            val name = runCatching {
+                val pm = context.packageManager
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            }.getOrDefault(pkg)
+            "$name: уведомлений $count"
+        }
     }
 
     companion object {
-        private const val MAX_DIGEST_INPUT_CHARS = 4000
+        private val ALLOWED_PACKAGES = setOf(
+            "org.telegram.messenger", "org.telegram.messenger.web",
+            "com.whatsapp", "com.whatsapp.w4b", "com.discord"
+        )
+        private val SENSITIVE = Regex(
+            "(?i)(код|парол|банк|карт[аы]|плат[её]ж|otp|password|verification|\\b[0-9]{4,8}\\b)"
+        )
     }
 }

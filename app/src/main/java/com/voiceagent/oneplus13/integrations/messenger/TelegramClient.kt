@@ -38,7 +38,7 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
     private val base = "https://api.telegram.org/bot$botToken"
 
     suspend fun sendMessage(chatId: String, text: String) = withContext(Dispatchers.IO) {
-        val json = """{"chat_id":"$chatId","text":${escapeJson(text)}}"""
+        val json = org.json.JSONObject().put("chat_id", chatId).put("text", text).toString()
         val body = json.toRequestBody("application/json".toMediaType())
         val request = Request.Builder().url("$base/sendMessage").post(body).build()
         http.newCall(request).execute().use { it.isSuccessful }
@@ -51,7 +51,7 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
             .get()
             .build()
         http.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) return@use offset to emptyList()
+            if (!resp.isSuccessful) throw java.io.IOException("Telegram polling HTTP ${resp.code}")
             val body = resp.body?.string().orEmpty()
             parseUpdates(body, offset)
         }
@@ -85,3 +85,4 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
     private fun escapeJson(text: String): String =
         "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
 }
+

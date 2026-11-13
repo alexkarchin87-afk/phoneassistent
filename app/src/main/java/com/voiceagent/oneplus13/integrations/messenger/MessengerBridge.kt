@@ -8,6 +8,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 
 /**
  * Unifies Telegram/MAX/WhatsApp under one interface: publishes every inbound
@@ -27,18 +29,30 @@ class MessengerBridge(
         if (polling) return
         polling = true
         scope.launch { pollTelegramLoop() }
-        scope.launch { pollMaxLoop() }
+        // MAX's API contract in this version is a stub; do not poll it until implemented.
     }
 
     fun stopPolling() {
         polling = false
+        scope.cancel()
     }
 
     private suspend fun pollTelegramLoop() {
+        var delayMs = 1_000L
         while (polling) {
-            val (newOffset, msgs) = telegram.pollUpdates(telegramOffset)
-            telegramOffset = newOffset
-            msgs.forEach(::publishInbound)
+            try {
+                val (newOffset, msgs) = telegram.pollUpdates(telegramOffset)
+                telegramOffset = newOffset
+                msgs.forEach { publishInbound(it) }
+                delayMs = 1_000L
+                delay(250)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("MessengerBridge", "Telegram polling failed; retrying")
+                delay(delayMs)
+                delayMs = (delayMs * 2).coerceAtMost(60_000L)
+            }
         }
     }
 
@@ -69,3 +83,4 @@ class MessengerBridge(
         MessengerPlatform.WHATSAPP -> whatsApp?.sendMessage(chatId, text) ?: false
     }
 }
+

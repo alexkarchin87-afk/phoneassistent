@@ -31,6 +31,12 @@ class TelegramBotService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Android 15 limits the total time a dataSync foreground service may run.
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        bridge.stopPolling()
+        stopSelf(startId)
+    }
+
     override fun onDestroy() {
         bridge.stopPolling()
         super.onDestroy()
@@ -48,3 +54,4 @@ class TelegramBotService : Service() {
         private const val NOTIF_ID = 1002
     }
 }
+

@@ -31,16 +31,32 @@ class WorkflowRunner(
         val visited = mutableSetOf<String>()
 
         while (current != null) {
-            if (!visited.add(current.id)) break // защита от случайного цикла в связях
+            if (!visited.add(current.id)) {
+                onStep(StepResult.Failed(current, "Обнаружен цикл в сценарии"))
+                return
+            }
             onStep(StepResult.Started(current))
 
-            val ok = runBlock(current)
+            val ok = try {
+                runBlock(current)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                onStep(StepResult.Failed(current, error.message ?: "Ошибка шага"))
+                return
+            }
             if (!ok) {
                 onStep(StepResult.Failed(current, "Шаг \"${current.type.displayName}\" не выполнился"))
                 return
             }
             stepsRun++
-            current = workflow.next(current.id)
+            val currentId = current.id
+            val next = workflow.next(currentId)
+            if (next == null && workflow.connections.any { it.fromId == currentId }) {
+                onStep(StepResult.Failed(current, "Следующий блок не найден"))
+                return
+            }
+            current = next
         }
         onStep(StepResult.Finished(stepsRun))
     }
@@ -61,3 +77,4 @@ class WorkflowRunner(
         }
     }
 }
+

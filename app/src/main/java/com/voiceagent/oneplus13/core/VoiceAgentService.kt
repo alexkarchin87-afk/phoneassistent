@@ -15,6 +15,7 @@ import com.voiceagent.oneplus13.agent.AgentOrchestrator
 import com.voiceagent.oneplus13.overlay.OverlayBubbleController
 import com.voiceagent.oneplus13.ui.UiPreferences
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -33,7 +34,10 @@ import java.io.File
 class VoiceAgentService : Service() {
 
     private val job = SupervisorJob()
-    private val scope = CoroutineScope(job)
+    private val errorHandler = CoroutineExceptionHandler { _, error ->
+        android.util.Log.e("VoiceAgentService", "Service coroutine failed", error)
+    }
+    private val scope = CoroutineScope(job + errorHandler)
 
     private lateinit var stt: STTEngine
     private lateinit var tts: TTSEngine
@@ -42,15 +46,22 @@ class VoiceAgentService : Service() {
 
     private var overlay: OverlayBubbleController? = null
     private var conversationActiveUntil = 0L
+    private var initFailed = false
 
     override fun onCreate() {
         super.onCreate()
-        stt = STTEngine(applicationContext)
-        tts = TTSEngine(applicationContext)
-        orchestrator = AgentOrchestrator(applicationContext, LLMClient(applicationContext), tts, scope)
-        uiPrefs = UiPreferences(applicationContext)
-
         startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_listening)))
+        try {
+            stt = STTEngine(applicationContext)
+            tts = TTSEngine(applicationContext)
+            orchestrator = AgentOrchestrator(applicationContext, LLMClient(applicationContext), tts, scope)
+            uiPrefs = UiPreferences(applicationContext)
+        } catch (error: Exception) {
+            initFailed = true
+            android.util.Log.e("VoiceAgentService", "Initialization failed", error)
+            stopSelf()
+            return
+        }
 
         stt.ensureModel(
             onReady = { startListeningLoop() },
@@ -75,7 +86,8 @@ class VoiceAgentService : Service() {
 
     private fun startListeningLoop() {
         scope.launch {
-            stt.listen().collect { transcript ->
+            stt.listen { tts.acceptsMicrophoneInput() }.collect { transcript ->
+                if (!tts.acceptsMicrophoneInput()) return@collect
                 val gotWakeWord = containsWakeWord(transcript)
                 if (gotWakeWord) {
                     AgentEventBus.publish(AgentEvent.WakeDetected)
@@ -109,7 +121,8 @@ class VoiceAgentService : Service() {
         return result.trim()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
+        if (initFailed) START_NOT_STICKY else START_STICKY
 
     /** Включает/выключает системный оверлей-пузырь и запоминает выбор. Ничего
      *  не делает, если разрешение "поверх других приложений" ещё не выдано —
@@ -171,13 +184,12 @@ class VoiceAgentService : Service() {
 
     private val binder = LocalBinder()
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder? = if (initFailed) null else binder
 
     override fun onDestroy() {
         stopOverlay()
-        stt.stop()
-        tts.shutdown()
         job.cancel()
+        if (::tts.isInitialized) tts.shutdown()
         super.onDestroy()
     }
 
@@ -234,3 +246,4 @@ class VoiceAgentService : Service() {
         private val WAKE_WORDS = listOf("ваня", "эй ваня")
     }
 }
+
