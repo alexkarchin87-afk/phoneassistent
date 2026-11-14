@@ -14,7 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 /** Serializes speech and exposes a gate for suppressing recognition of our own voice. */
-class TTSEngine(context: Context) {
+class TTSEngine(
+    context: Context,
+    private val onSpeechStateChanged: (Boolean) -> Unit = {}
+) {
     @Volatile private var ready = false
     @Volatile private var speaking = false
     @Volatile private var suppressUntil = 0L
@@ -32,6 +35,7 @@ class TTSEngine(context: Context) {
         if (!ready || text.isBlank()) return@withLock
         speaking = true
         try {
+            onSpeechStateChanged(true)
             withTimeoutOrNull(60_000L) {
                 suspendCancellableCoroutine<Unit> { cont ->
                     val id = UUID.randomUUID().toString()
@@ -52,8 +56,11 @@ class TTSEngine(context: Context) {
         } finally {
             suppressUntil = SystemClock.elapsedRealtime() + 1_200L
             speaking = false
+            onSpeechStateChanged(false)
         }
     }
 
     fun shutdown() { tts.stop(); tts.shutdown() }
 }
+
+\n

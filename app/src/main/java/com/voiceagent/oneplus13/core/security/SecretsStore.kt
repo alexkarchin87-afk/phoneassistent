@@ -1,6 +1,7 @@
 package com.voiceagent.oneplus13.core.security
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
@@ -15,19 +16,9 @@ import androidx.security.crypto.MasterKey
  */
 class SecretsStore(context: Context) {
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "voice_agent_secrets",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
-
-    private val keyIndex = context.getSharedPreferences("voice_agent_secret_index", Context.MODE_PRIVATE)
+    private val storage = storageFor(context.applicationContext)
+    private val prefs = storage.prefs
+    private val keyIndex = storage.keyIndex
 
     fun put(key: String, value: String) {
         prefs.edit().putString(key, value).apply()
@@ -47,6 +38,7 @@ class SecretsStore(context: Context) {
 
     fun remove(key: String) {
         prefs.edit().remove(key).apply()
+        if (key.startsWith("project_secret:")) keyIndex.edit().remove(key).apply()
     }
 
     /** Convenience: value from SecretsStore if the user has set one, else [fallback]
@@ -55,6 +47,24 @@ class SecretsStore(context: Context) {
     fun getOrDefault(key: String, fallback: String): String = get(key)?.takeIf { it.isNotBlank() } ?: fallback
 
     companion object {
+        private data class Storage(val prefs: SharedPreferences, val keyIndex: SharedPreferences)
+        @Volatile private var sharedStorage: Storage? = null
+
+        private fun storageFor(context: Context): Storage = sharedStorage ?: synchronized(this) {
+            sharedStorage ?: run {
+                val masterKey = MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                Storage(
+                    EncryptedSharedPreferences.create(
+                        context, "voice_agent_secrets", masterKey,
+                        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                    ),
+                    context.getSharedPreferences("voice_agent_secret_index", Context.MODE_PRIVATE)
+                ).also { sharedStorage = it }
+            }
+        }
         const val KEY_DEEPSEEK_API_KEY = "deepseek_api_key"
         const val KEY_CLAUDE_API_KEY = "claude_api_key"
         const val KEY_TELEGRAM_BOT_TOKEN = "telegram_bot_token"
@@ -65,3 +75,5 @@ class SecretsStore(context: Context) {
         fun pendingBotFatherTokenKey(projectName: String) = "pending_botfather_token:$projectName"
     }
 }
+
+\n

@@ -6,6 +6,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
@@ -22,6 +23,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.flowOn
+import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
 
 /**
@@ -40,15 +43,18 @@ class VoiceAgentService : Service() {
     private val errorHandler = CoroutineExceptionHandler { _, error ->
         android.util.Log.e("VoiceAgentService", "Service coroutine failed", error)
     }
-    private val scope = CoroutineScope(job + errorHandler)
+    // Android views and overlay lifecycle always stay on the main thread.
+    private val scope = CoroutineScope(job + Dispatchers.Main.immediate + errorHandler)
 
     private lateinit var stt: STTEngine
     private lateinit var tts: TTSEngine
     private lateinit var orchestrator: Deferred<AgentOrchestrator>
+    @Volatile private var orchestratorInstance: AgentOrchestrator? = null
     private lateinit var uiPrefs: UiPreferences
 
     private var overlay: OverlayBubbleController? = null
-    private var conversationActiveUntil = 0L
+    @Volatile private var conversationActiveUntil = 0L
+    private val commandBusy = AtomicBoolean(false)
     @Volatile private var initFailed = false
 
     override fun onCreate() {
@@ -56,11 +62,12 @@ class VoiceAgentService : Service() {
         startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_listening)))
         try {
             stt = STTEngine(applicationContext)
-            tts = TTSEngine(applicationContext)
+            tts = TTSEngine(applicationContext) { active -> stt.setSpeechOutputActive(active) }
             uiPrefs = UiPreferences(applicationContext)
             orchestrator = scope.async(Dispatchers.IO) {
                 try {
                     AgentOrchestrator(applicationContext, LLMClient(applicationContext), tts, scope)
+                        .also { orchestratorInstance = it }
                 } catch (error: Exception) {
                     initFailed = true
                     android.util.Log.e("VoiceAgentService", "Orchestrator initialization failed", error)
@@ -76,7 +83,7 @@ class VoiceAgentService : Service() {
         }
 
         stt.ensureModel(
-            onReady = { startListeningLoop() },
+            onReady = { if (job.isActive) startListeningLoop() else stt.releaseModel() },
             onError = { scope.launch { AgentEventBus.publish(AgentEvent.Error("Модель STT не загрузилась", it)) } }
         )
 
@@ -98,8 +105,9 @@ class VoiceAgentService : Service() {
 
     private fun startListeningLoop() {
         scope.launch {
-            stt.listen { tts.acceptsMicrophoneInput() }.collect { transcript ->
+            stt.listen { tts.acceptsMicrophoneInput() }.flowOn(Dispatchers.IO).collect { transcript ->
                 if (!tts.acceptsMicrophoneInput()) return@collect
+                val agent = orchestrator.await()
                 val gotWakeWord = containsWakeWord(transcript)
                 if (gotWakeWord) {
                     AgentEventBus.publish(AgentEvent.WakeDetected)
@@ -110,19 +118,32 @@ class VoiceAgentService : Service() {
                 // не остыл (CONVERSATION_WINDOW_MS после последней фразы) — это
                 // и есть "появляется только по вызову", а не слушает каждое
                 // произнесённое слово в комнате как команду.
-                if (gotWakeWord || isConversationActive()) {
-                    conversationActiveUntil = System.currentTimeMillis() + CONVERSATION_WINDOW_MS
+                val route = routeTranscript(agent.isRecordingLecture(), gotWakeWord,
+                    agent.isAwaitingConfirmation(), isConversationActive())
+                if (route == TranscriptRoute.LECTURE) {
+                    agent.appendLectureTranscript(transcript)
+                    return@collect
+                }
+                if (route == TranscriptRoute.COMMAND) {
                     val cleaned = stripWakeWord(transcript)
-                    if (cleaned.isNotBlank()) {
+                    if (cleaned.isNotBlank() && commandBusy.compareAndSet(false, true)) {
+                        conversationActiveUntil = SystemClock.elapsedRealtime() + CONVERSATION_WINDOW_MS
                         AgentEventBus.publish(AgentEvent.Heard(cleaned))
-                        orchestrator.await().handleTranscript(cleaned)
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                agent.handleTranscript(cleaned)
+                            } finally {
+                                conversationActiveUntil = SystemClock.elapsedRealtime() + CONVERSATION_WINDOW_MS
+                                commandBusy.set(false)
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun isConversationActive(): Boolean = System.currentTimeMillis() < conversationActiveUntil
+    private fun isConversationActive(): Boolean = SystemClock.elapsedRealtime() < conversationActiveUntil
 
     private fun containsWakeWord(text: String): Boolean =
         WakeWord.contains(text)
@@ -160,7 +181,7 @@ class VoiceAgentService : Service() {
         overlay = OverlayBubbleController(
             context = applicationContext,
             scope = scope,
-            onSendText = { text -> scope.launch { orchestrator.await().handleTranscript(text) } }
+            onSendText = { text -> scope.launch(Dispatchers.IO) { orchestrator.await().handleTranscript(text) } }
         ).also {
             // По умолчанию пузырь появляется только по будильному слову
             // (flashOnWake из startListeningLoop). Явная настройка "показывать
@@ -181,7 +202,7 @@ class VoiceAgentService : Service() {
      */
     inner class LocalBinder : Binder() {
         fun sendText(text: String) {
-            scope.launch { orchestrator.await().handleTranscript(text) }
+            scope.launch(Dispatchers.IO) { orchestrator.await().handleTranscript(text) }
         }
 
         fun setOverlayEnabled(enabled: Boolean) = this@VoiceAgentService.setOverlayEnabled(enabled)
@@ -196,7 +217,9 @@ class VoiceAgentService : Service() {
 
     override fun onDestroy() {
         stopOverlay()
+        orchestratorInstance?.onServiceStopping()
         job.cancel()
+        job.invokeOnCompletion { if (::stt.isInitialized) stt.releaseModel() }
         if (::tts.isInitialized) tts.shutdown()
         super.onDestroy()
     }
@@ -254,3 +277,5 @@ class VoiceAgentService : Service() {
     }
 }
 
+
+\n

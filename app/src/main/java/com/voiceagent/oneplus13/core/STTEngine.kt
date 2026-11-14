@@ -23,21 +23,31 @@ import org.vosk.android.StorageService
 class STTEngine(private val context: Context) {
 
     private var model: Model? = null
-    private var speechService: SpeechService? = null
+    private val modelLock = Any()
+    @Volatile private var speechService: SpeechService? = null
 
     /** Unpacks the bundled Vosk model (assets/model-ru-small) into internal storage if needed. */
     fun ensureModel(modelAssetPath: String = "model-ru-small", onReady: (Model) -> Unit, onError: (Throwable) -> Unit) {
         StorageService.unpack(context, modelAssetPath, "model",
-            { unpackedModel -> model = unpackedModel; onReady(unpackedModel) },
+            { unpackedModel ->
+                synchronized(modelLock) { model = unpackedModel }
+                onReady(unpackedModel)
+            },
             { ex -> Log.e("STTEngine", "model unpack failed", ex); onError(ex) }
         )
     }
 
     /** Continuous partial+final recognition as a cold Flow; cancel the collector to stop listening. */
     fun listen(acceptTranscript: () -> Boolean = { true }): Flow<String> = callbackFlow {
-        val currentModel = model ?: throw IllegalStateException("Call ensureModel() first")
+        val currentModel = synchronized(modelLock) { model }
+            ?: throw IllegalStateException("Call ensureModel() first")
         val recognizer = Recognizer(currentModel, 16000.0f)
-        val service = SpeechService(recognizer, 16000.0f)
+        val service = try {
+            SpeechService(recognizer, 16000.0f)
+        } catch (error: Exception) {
+            recognizer.close()
+            throw error
+        }
         speechService = service
 
         service.startListening(object : RecognitionListener {
@@ -68,17 +78,34 @@ class STTEngine(private val context: Context) {
 
             override fun onTimeout() { /* no-op: keep listening */ }
         })
+        if (!acceptTranscript()) service.setPause(true)
 
         awaitClose {
-            service.stop()
+            service.cancel()
             service.shutdown()
+            recognizer.close()
+            if (speechService === service) speechService = null
         }
     }.buffer(0)
 
-    fun stop() {
-        speechService?.stop()
-        speechService?.shutdown()
-        speechService = null
+    /** Vosk continues reading audio while paused, but avoids recognition work. */
+    fun setSpeechOutputActive(active: Boolean) {
+        speechService?.let { service ->
+            if (!active) service.reset()
+            service.setPause(active)
+        }
+    }
+
+    /** Only call after the listening coroutine has stopped. */
+    fun releaseModel() {
+        val old = synchronized(modelLock) {
+            val existing = model
+            model = null
+            existing
+        }
+        old?.close()
     }
 }
 
+
+\n

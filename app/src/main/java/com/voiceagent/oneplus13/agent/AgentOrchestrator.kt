@@ -57,7 +57,7 @@ class AgentOrchestrator(
     scope: CoroutineScope
 ) {
     private val systemController = SystemController(context)
-    private val lectureCommands = LectureCommands(context)
+    private val lectureCommands = LectureCommands(context, llm, scope)
     private val secrets = SecretsStore(context)
     private val codeGenAgent = CodeGenAgent(llm)
     private val projectStorage = ProjectStorage(context)
@@ -75,7 +75,7 @@ class AgentOrchestrator(
 
     private var lastGeneratedProjectName: String? = null
     private var lastNotesTopic: String? = null
-    private var pendingConfirmation: PendingConfirmation? = null
+    @Volatile private var pendingConfirmation: PendingConfirmation? = null
     private var pendingCodeChoice: PendingCodeChoice? = null
 
     init {
@@ -188,6 +188,13 @@ class AgentOrchestrator(
     suspend fun handleTranscript(text: String) = conversationMutex.withLock {
         handleTranscriptLocked(text)
     }
+
+    fun isRecordingLecture(): Boolean = lectureCommands.isRecording()
+    fun appendLectureTranscript(text: String) = lectureCommands.appendTranscript(text)
+    fun isAwaitingConfirmation(): Boolean = pendingConfirmation?.let {
+        SystemClock.elapsedRealtime() <= it.expiresAt
+    } ?: false
+    fun onServiceStopping() = lectureCommands.preserveOnShutdown()
 
     private suspend fun handleTranscriptLocked(text: String) {
         if (pendingConfirmation?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) {
@@ -400,6 +407,8 @@ class AgentOrchestrator(
             "open_app" -> "Открыть приложение ${params["package"].orEmpty()}?"
             "tap_text" -> "Нажать ${params["label"].orEmpty()}?"
             "set_volume" -> "Установить громкость ${params["percent"].orEmpty()} процентов?"
+            "lecture_start" -> "Начать запись речи в текст лекции?"
+            "lecture_stop" -> "Остановить запись и отправить текст лекции модели для конспекта?"
             "install_app" -> "Открыть или скачать ${params["query"].orEmpty()} для установки?"
             "toggle_wifi", "toggle_bluetooth", "toggle_mobile_data" ->
                 "Изменить ${action.removePrefix("toggle_")} на ${params["enabled"].orEmpty()}?"
@@ -421,8 +430,14 @@ class AgentOrchestrator(
             "set_volume" -> params["percent"]?.toIntOrNull()?.let { systemController.setMediaVolume(it) }
             "tap_text" -> params["label"]?.let { systemController.tapByText(it) }
             "swipe_up" -> systemController.swipeUp()
-            "lecture_start" -> lectureCommands.start(params["title"] ?: "Лекция")
-            "lecture_stop" -> lectureCommands.stop()
+            "lecture_start" -> tts.speak(
+                if (lectureCommands.start(params["title"] ?: "Лекция")) "Начал запись лекции."
+                else "Лекция уже записывается."
+            )
+            "lecture_stop" -> tts.speak(
+                if (lectureCommands.stop()) "Текст сохранён, готовлю конспект."
+                else "Сейчас лекция не записывается."
+            )
             "lecture_summary" -> tts.speak(lectureCommands.latestSummary() ?: "Пока нет сохранённых лекций")
             "generate_code" -> handleGenerateCode(params)
             "continue_code" -> handleContinueCode(params)
@@ -792,3 +807,5 @@ class AgentOrchestrator(
     }
 }
 
+
+\n

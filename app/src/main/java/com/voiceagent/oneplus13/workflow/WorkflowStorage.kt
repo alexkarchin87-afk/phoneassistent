@@ -38,7 +38,11 @@ class WorkflowStorage(private val context: Context) {
         }
     }
 
-    fun findByName(name: String): Workflow? =
-        listAll().firstOrNull { it.name.equals(name, ignoreCase = true) }
-            ?: listAll().firstOrNull { it.name.lowercase().contains(name.lowercase()) }
+    fun findByName(name: String): Workflow? {
+        val workflows = listAll()
+        return workflows.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            ?: workflows.firstOrNull { it.name.contains(name, ignoreCase = true) }
+    }
 }
+
+\n
