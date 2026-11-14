@@ -6,10 +6,8 @@ import com.voiceagent.oneplus13.integrations.messenger.models.MessengerPlatform
 import com.voiceagent.oneplus13.integrations.messenger.models.Msg
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.CancellationException
 
 /**
  * Unifies Telegram/MAX/WhatsApp under one interface: publishes every inbound
@@ -22,45 +20,24 @@ class MessengerBridge(
     private val whatsApp: WhatsAppClient? = null
 ) {
     private val scope = CoroutineScope(Job())
-    private var telegramOffset = 0L
     private var polling = false
 
     fun startPolling() {
         if (polling) return
         polling = true
-        scope.launch { pollTelegramLoop() }
+        scope.launch {
+            TelegramPolling(
+                poll = { telegram.pollUpdates(it) },
+                publish = { publishInbound(it) },
+                reportError = { android.util.Log.w("MessengerBridge", "Telegram polling failed; retrying") }
+            ).run()
+        }
         // MAX's API contract in this version is a stub; do not poll it until implemented.
     }
 
     fun stopPolling() {
         polling = false
         scope.cancel()
-    }
-
-    private suspend fun pollTelegramLoop() {
-        var delayMs = 1_000L
-        while (polling) {
-            try {
-                val (newOffset, msgs) = telegram.pollUpdates(telegramOffset)
-                telegramOffset = newOffset
-                msgs.forEach { publishInbound(it) }
-                delayMs = 1_000L
-                delay(250)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                android.util.Log.w("MessengerBridge", "Telegram polling failed; retrying")
-                delay(delayMs)
-                delayMs = (delayMs * 2).coerceAtMost(60_000L)
-            }
-        }
-    }
-
-    private suspend fun pollMaxLoop() {
-        while (polling) {
-            max.pollUpdates().forEach { publishInbound(it) }
-            delay(3000)
-        }
     }
 
     private suspend fun publishInbound(msg: Msg) {

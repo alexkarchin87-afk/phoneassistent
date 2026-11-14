@@ -44,8 +44,19 @@ jobs:
       - name: Write local.properties (sdk.dir only — секреты НЕ коммитим)
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
+      - name: Run Android unit tests
+        run: gradle testDebugUnitTest --stacktrace
+
+      - name: Prepare offline Russian speech model
+        run: python3 scripts/prepare_vosk_model.py
+
       - name: Assemble debug APK
         run: gradle assembleDebug --stacktrace
+
+      - name: Verify model assets in APK
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/uuid'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/am/final.mdl'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

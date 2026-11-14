@@ -2,14 +2,11 @@ package com.voiceagent.oneplus13.integrations.messenger
 
 import android.content.Context
 import com.squareup.moshi.JsonClass
-import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.voiceagent.oneplus13.BuildConfig
 import com.voiceagent.oneplus13.core.security.SecretsStore
 import com.voiceagent.oneplus13.integrations.messenger.models.MessengerPlatform
 import com.voiceagent.oneplus13.integrations.messenger.models.Msg
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.voiceagent.oneplus13.core.awaitBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -34,27 +31,24 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
         .readTimeout(35, TimeUnit.SECONDS) // long-poll friendly
         .build()
 
-    private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
     private val base = "https://api.telegram.org/bot$botToken"
 
-    suspend fun sendMessage(chatId: String, text: String) = withContext(Dispatchers.IO) {
+    suspend fun sendMessage(chatId: String, text: String): Boolean {
         val json = org.json.JSONObject().put("chat_id", chatId).put("text", text).toString()
         val body = json.toRequestBody("application/json".toMediaType())
         val request = Request.Builder().url("$base/sendMessage").post(body).build()
-        http.newCall(request).execute().use { it.isSuccessful }
+        return http.newCall(request).awaitBody().code in 200..299
     }
 
     /** Long-polls getUpdates and returns any new messages as platform-agnostic Msg objects. */
-    suspend fun pollUpdates(offset: Long): Pair<Long, List<Msg>> = withContext(Dispatchers.IO) {
+    suspend fun pollUpdates(offset: Long): Pair<Long, List<Msg>> {
         val request = Request.Builder()
             .url("$base/getUpdates?timeout=30&offset=$offset")
             .get()
             .build()
-        http.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) throw java.io.IOException("Telegram polling HTTP ${resp.code}")
-            val body = resp.body?.string().orEmpty()
-            parseUpdates(body, offset)
-        }
+        val resp = http.newCall(request).awaitBody()
+        if (resp.code !in 200..299) throw java.io.IOException("Telegram polling HTTP ${resp.code}")
+        return parseUpdates(resp.body, offset)
     }
 
     private fun parseUpdates(json: String, currentOffset: Long): Pair<Long, List<Msg>> {
@@ -82,7 +76,5 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
         return maxUpdateId to msgs
     }
 
-    private fun escapeJson(text: String): String =
-        "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
 }
 
