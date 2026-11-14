@@ -36,4 +36,17 @@ class WorkflowRunnerTest {
         assertEquals(listOf("a"), executed)
         assertTrue(steps.last() is WorkflowRunner.StepResult.Failed)
     }
+
+    @Test fun confirmationDescribesAllStepsAndParameters() {
+        val first = WorkflowBlock(id = "a", type = BlockType.OPEN_URL,
+            params = mutableMapOf("url" to "https://example.com"))
+        val second = block("b")
+        val workflow = Workflow(name = "review", blocks = mutableListOf(first, second),
+            connections = mutableListOf(WorkflowConnection("a", "b")))
+        val description = describeWorkflowForConfirmation(workflow).orEmpty()
+        assertTrue(description.contains("https://example.com"))
+        assertTrue(description.contains("Пауза"))
+        assertEquals(null, describeWorkflowForConfirmation(workflow.copy(
+            connections = mutableListOf(WorkflowConnection("a", "b"), WorkflowConnection("b", "a")))))
+    }
 }

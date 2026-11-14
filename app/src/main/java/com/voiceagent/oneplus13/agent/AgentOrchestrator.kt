@@ -25,6 +25,7 @@ import com.voiceagent.oneplus13.workflow.WorkflowAiBuilder
 import com.voiceagent.oneplus13.workflow.WorkflowRunner
 import com.voiceagent.oneplus13.workflow.WorkflowStorage
 import com.voiceagent.oneplus13.workflow.Workflow
+import com.voiceagent.oneplus13.workflow.describeWorkflowForConfirmation
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.CoroutineScope
@@ -199,7 +200,9 @@ class AgentOrchestrator(
             when (classifyYesNo(text)) {
                 true -> {
                     pendingConfirmation = null
-                    AgentEventBus.publish(AgentEvent.ActionRequested(pending.action, pending.params))
+                    AgentEventBus.publish(AgentEvent.ActionRequested(
+                        pending.action, pending.params.filterKeys { !it.startsWith("_") }
+                    ))
                     dispatch(pending.action, pending.params)
                 }
                 false -> { pendingConfirmation = null; tts.speak("Хорошо, отменено.") }
@@ -376,21 +379,39 @@ class AgentOrchestrator(
     }
 
     private suspend fun requestConfirmation(action: String, params: Map<String, String>) {
+        val approvedParams = if (action == "run_workflow") {
+            val name = params["name"].orEmpty()
+            val workflow = workflowStorage.findByName(name)
+            if (name.isBlank() || workflow == null) {
+                tts.speak("Не нашёл этот сценарий.")
+                return
+            }
+            val description = describeWorkflowForConfirmation(workflow)
+            if (description == null) {
+                tts.speak("Не могу безопасно перечислить все шаги. Открой сценарий в редакторе и проверь его.")
+                return
+            }
+            mapOf("name" to workflow.name, "_workflow_snapshot" to workflow.toJson().toString(),
+                "_workflow_description" to description)
+        } else params.toMap()
         val detail = when (action) {
             "reply_notification" -> "Отправить ${params["name"].orEmpty()}: ${params["text"].orEmpty()}?"
             "open_url" -> "Открыть ссылку ${params["url"].orEmpty()}?"
             "open_app" -> "Открыть приложение ${params["package"].orEmpty()}?"
             "tap_text" -> "Нажать ${params["label"].orEmpty()}?"
+            "set_volume" -> "Установить громкость ${params["percent"].orEmpty()} процентов?"
             "install_app" -> "Открыть или скачать ${params["query"].orEmpty()} для установки?"
             "toggle_wifi", "toggle_bluetooth", "toggle_mobile_data" ->
                 "Изменить ${action.removePrefix("toggle_")} на ${params["enabled"].orEmpty()}?"
-            "run_workflow" -> "Запустить сценарий ${params["name"].orEmpty()}?"
-            "describe_screen", "identify_on_screen" -> "Прочитать доступный текст текущего экрана вслух? В модель он не отправится."
+            "run_workflow" -> "Запустить сценарий ${approvedParams["name"]}? Шаги: ${approvedParams["_workflow_description"]}."
+            "describe_screen", "identify_on_screen" -> "Описание экрана сейчас отключено."
             "chats_digest" -> "Прочитать локальную сводку уведомлений?"
             else -> "Выполнить действие $action?"
         }
-        pendingConfirmation = PendingConfirmation(action, params.toMap(), detail)
+        AgentEventBus.publish(AgentEvent.Reply(detail))
         tts.speak("$detail Скажи да или отмена.")
+        // The response window starts after the prompt finishes, even for long workflows.
+        pendingConfirmation = PendingConfirmation(action, approvedParams, detail)
     }
 
     private suspend fun dispatch(action: String, params: Map<String, String>) {
@@ -652,16 +673,13 @@ class AgentOrchestrator(
         tts.speak("Дополнил конспект \"$topic\".")
     }
 
-    /** "Запусти сценарий Х" — ищет сохранённый сценарий по имени и выполняет. */
+    /** Execute the snapshot actually described at confirmation, even if the saved file changes. */
     private suspend fun handleRunWorkflowByName(params: Map<String, String>) {
-        val name = params["name"]
-        if (name.isNullOrBlank()) {
-            tts.speak("Какой сценарий запустить?")
-            return
+        val workflow = params["_workflow_snapshot"]?.let {
+            runCatching { Workflow.fromJson(JSONObject(it)) }.getOrNull()
         }
-        val workflow = workflowStorage.findByName(name)
         if (workflow == null) {
-            tts.speak("Не нашёл сценарий \"$name\". Собери его сначала в Мастерской сценариев.")
+            tts.speak("Не удалось проверить подтверждённый сценарий.")
             return
         }
         runWorkflow(workflow)
