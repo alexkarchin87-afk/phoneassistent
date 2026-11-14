@@ -37,6 +37,8 @@ import com.voiceagent.oneplus13.core.security.SecretsStore
 import com.voiceagent.oneplus13.system.CheckStatus
 import com.voiceagent.oneplus13.system.Diagnostics
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
+import com.voiceagent.oneplus13.integrations.bot.TelegramBotService
 import java.io.File
 
 /**
@@ -115,6 +117,7 @@ fun SettingsScreen(
     var claudeKey by remember { mutableStateOf(secrets.get(SecretsStore.KEY_CLAUDE_API_KEY).orEmpty()) }
     var telegramToken by remember { mutableStateOf(secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).orEmpty()) }
     var maxToken by remember { mutableStateOf(secrets.get(SecretsStore.KEY_MAX_SERVICE_TOKEN).orEmpty()) }
+    var botStatus by remember { mutableStateOf("") }
     val projectSecrets = remember { listProjectSecrets(context) }
 
     LazyColumn(modifier = Modifier.padding(16.dp)) {
@@ -176,6 +179,24 @@ fun SettingsScreen(
                     modifier = Modifier.padding(vertical = 8.dp)
                 ) { Text("Сохранить") }
             }
+            item {
+                Text("Telegram: сначала сохрани токен, затем запусти приём. MAX пока не подключён.")
+                Button(onClick = {
+                    if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).isNullOrBlank()) {
+                        botStatus = "Сначала сохрани токен Telegram."
+                    } else {
+                        botStatus = runCatching {
+                            ContextCompat.startForegroundService(context, Intent(context, TelegramBotService::class.java))
+                            "Запрос на запуск отправлен; проверь уведомление сервиса."
+                        }.getOrElse { "Не удалось запустить сервис: ${it.message}" }
+                    }
+                }) { Text("Запустить Telegram") }
+                Button(onClick = {
+                    context.stopService(Intent(context, TelegramBotService::class.java))
+                    botStatus = "Сервис остановлен."
+                }) { Text("Остановить Telegram") }
+                if (botStatus.isNotBlank()) Text(botStatus)
+            }
 
             item { Text("Как отвечает Ваня", style = MaterialTheme.typography.titleMedium) }
             item {
@@ -219,9 +240,9 @@ fun SettingsScreen(
             item { Text("Резервная копия", style = MaterialTheme.typography.titleMedium) }
             item {
                 Text(
-                    "Один файл со всеми ключами, найденными токенами и тем, что агент " +
-                        "запомнил — для переноса на новый телефон. Файл открытый (не " +
-                        "зашифрован), делись им так же осторожно, как паролями.",
+                    "Файл настроек и сохранённых фактов для переноса на новый телефон. " +
+                        "Ключи и токены не экспортируются: их нужно ввести заново. " +
+                        "Файл не зашифрован и может содержать личные сведения.",
                     color = Color.Gray
                 )
             }
@@ -365,3 +386,4 @@ private fun listProjectSecrets(context: Context): List<Pair<String, String>> {
     val store = SecretsStore(context)
     return store.projectSecretKeys().mapNotNull { key -> store.get(key)?.let { key to it } }
 }
+

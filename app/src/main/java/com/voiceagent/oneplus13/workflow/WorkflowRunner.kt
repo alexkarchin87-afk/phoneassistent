@@ -15,37 +15,55 @@ import kotlinx.coroutines.delay
  * Обрывает выполнение при первой ошибке (не пытается продолжить сценарий
  * вслепую, если предыдущий шаг не удался) и сообщает об этом через [onStep].
  */
-class WorkflowRunner(
-    private val systemController: SystemController,
-    private val tts: TTSEngine
+class WorkflowRunner internal constructor(
+    private val executeBlock: suspend (WorkflowBlock) -> Boolean
 ) {
+    constructor(systemController: SystemController, tts: TTSEngine) :
+        this({ block -> runBlock(block, systemController, tts) })
     sealed class StepResult {
         data class Started(val block: WorkflowBlock) : StepResult()
         data class Finished(val stepsRun: Int) : StepResult()
         data class Failed(val block: WorkflowBlock, val reason: String) : StepResult()
     }
 
-    suspend fun run(workflow: Workflow, onStep: (StepResult) -> Unit = {}) {
+    suspend fun run(workflow: Workflow, onStep: suspend (StepResult) -> Unit = {}) {
         var current = workflow.startBlock()
         var stepsRun = 0
         val visited = mutableSetOf<String>()
 
         while (current != null) {
-            if (!visited.add(current.id)) break // защита от случайного цикла в связях
+            if (!visited.add(current.id)) {
+                onStep(StepResult.Failed(current, "Обнаружен цикл в сценарии"))
+                return
+            }
             onStep(StepResult.Started(current))
 
-            val ok = runBlock(current)
+            val ok = try {
+                executeBlock(current)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                onStep(StepResult.Failed(current, error.message ?: "Ошибка шага"))
+                return
+            }
             if (!ok) {
                 onStep(StepResult.Failed(current, "Шаг \"${current.type.displayName}\" не выполнился"))
                 return
             }
             stepsRun++
-            current = workflow.next(current.id)
+            val currentId = current.id
+            val next = workflow.next(currentId)
+            if (next == null && workflow.connections.any { it.fromId == currentId }) {
+                onStep(StepResult.Failed(current, "Следующий блок не найден"))
+                return
+            }
+            current = next
         }
         onStep(StepResult.Finished(stepsRun))
     }
 
-    private suspend fun runBlock(block: WorkflowBlock): Boolean = when (block.type) {
+    companion object {
+    private suspend fun runBlock(block: WorkflowBlock, systemController: SystemController, tts: TTSEngine): Boolean = when (block.type) {
         BlockType.OPEN_APP -> block.params["package"]?.let { systemController.openApp(it) } ?: false
         BlockType.OPEN_URL -> block.params["url"]?.let { systemController.openUrl(it); true } ?: false
         BlockType.SET_VOLUME -> block.params["percent"]?.toIntOrNull()?.let {
@@ -60,4 +78,6 @@ class WorkflowRunner(
             true
         }
     }
+    }
 }
+

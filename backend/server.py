@@ -11,12 +11,14 @@ import os
 import uuid
 import time
 import threading
+import hmac
+from collections import deque
 from enum import Enum
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Подхватывает backend/.env при прямом запуске (uvicorn server:app --app-dir backend).
 # При запуске через docker-compose эту же переменную подставляет сам compose
@@ -24,13 +26,9 @@ from pydantic import BaseModel
 # файл внутри контейнера и молча ничего не делает.
 load_dotenv()
 
-WORKER_TOKEN = os.environ.get("AGENT_WORKER_TOKEN", "change-me")
-if WORKER_TOKEN == "change-me":
-    print(
-        "[VoiceAgent Worker] ВНИМАНИЕ: AGENT_WORKER_TOKEN не задан (или backend/.env "
-        "не найден/не подхватился) — используется значение по умолчанию 'change-me'. "
-        "Скопируй backend/.env.example в backend/.env и впиши свой токен."
-    )
+WORKER_TOKEN = os.environ.get("AGENT_WORKER_TOKEN", "")
+if len(WORKER_TOKEN) < 24 or WORKER_TOKEN == "change-me":
+    raise RuntimeError("Set AGENT_WORKER_TOKEN to a unique secret of at least 24 characters")
 
 app = FastAPI(title="VoiceAgent Worker")
 
@@ -52,34 +50,54 @@ class Job3D(BaseModel):
 
 
 class SubmitJobRequest(BaseModel):
-    kind: str
-    params_json: str
+    kind: str = Field(min_length=1, max_length=100)
+    params_json: str = Field(max_length=16384)
 
 
 JOBS: Dict[str, Job3D] = {}
+JOBS_LOCK = threading.Lock()
+SUBMISSIONS = deque()
+MAX_JOBS = 100
 
 
 def require_auth(authorization: str = Header(default="")):
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != WORKER_TOKEN:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="invalid worker token")
+    token = authorization[len("Bearer "):].strip()
+    if not hmac.compare_digest(token.encode("utf-8"), WORKER_TOKEN.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid worker token")
 
 
 def run_job_stub(job_id: str):
     """Replace this with your real executor. Kept synchronous + backgrounded via thread
     for simplicity; swap for a proper task queue (RQ/Celery) for production use."""
-    job = JOBS[job_id]
-    job.status = Job3DStatus.RUNNING
+    with JOBS_LOCK:
+        job = JOBS[job_id]
+        job.status = Job3DStatus.RUNNING
     time.sleep(5)  # simulate work
-    job.status = Job3DStatus.DONE
-    job.result_url = f"https://your-vps.example.com/results/{job_id}.png"
+    with JOBS_LOCK:
+        job.status = Job3DStatus.DONE
+        job.result_url = f"https://your-vps.example.com/results/{job_id}.png"
 
 
 @app.post("/jobs", response_model=Job3D)
 def submit_job(req: SubmitJobRequest, authorization: str = Header(default="")):
     require_auth(authorization)
-    job = Job3D(id=str(uuid.uuid4()), kind=req.kind, params_json=req.params_json)
-    JOBS[job.id] = job
+    with JOBS_LOCK:
+        now = time.monotonic()
+        while SUBMISSIONS and SUBMISSIONS[0] <= now - 60:
+            SUBMISSIONS.popleft()
+        if len(SUBMISSIONS) >= 30:
+            raise HTTPException(status_code=429, detail="too many jobs")
+        if len(JOBS) >= MAX_JOBS:
+            finished = next((key for key, value in JOBS.items()
+                             if value.status in (Job3DStatus.DONE, Job3DStatus.FAILED)), None)
+            if finished is None:
+                raise HTTPException(status_code=503, detail="job queue full")
+            del JOBS[finished]
+        SUBMISSIONS.append(now)
+        job = Job3D(id=str(uuid.uuid4()), kind=req.kind, params_json=req.params_json)
+        JOBS[job.id] = job
     threading.Thread(target=run_job_stub, args=(job.id,), daemon=True).start()
     return job
 
@@ -87,7 +105,8 @@ def submit_job(req: SubmitJobRequest, authorization: str = Header(default="")):
 @app.get("/jobs/{job_id}", response_model=Job3D)
 def get_job(job_id: str, authorization: str = Header(default="")):
     require_auth(authorization)
-    job = JOBS.get(job_id)
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return job
@@ -96,3 +115,4 @@ def get_job(job_id: str, authorization: str = Header(default="")):
 @app.get("/health")
 def health():
     return {"ok": True}
+

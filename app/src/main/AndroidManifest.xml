@@ -65,7 +65,7 @@
         <service
             android:name=".core.VoiceAgentService"
             android:exported="false"
-            android:foregroundServiceType="microphone|dataSync" />
+            android:foregroundServiceType="microphone" />
 
         <service
             android:name=".system.AccessibilityAgent"
@@ -112,3 +112,4 @@
         </provider>
     </application>
 </manifest>
+

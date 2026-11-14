@@ -6,7 +6,7 @@ enum class MessengerPlatform { TELEGRAM, MAX, WHATSAPP }
 
 /** Platform-agnostic message shape used by MessengerBridge, so AgentOrchestrator
  *  never has to know which messenger a message came from. */
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 data class Msg(
     val platform: MessengerPlatform,
     val chatId: String,

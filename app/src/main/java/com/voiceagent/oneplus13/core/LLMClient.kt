@@ -8,19 +8,19 @@ import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.voiceagent.oneplus13.BuildConfig
 import com.voiceagent.oneplus13.core.security.SecretsStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 data class ChatMessage(val role: String, val content: String)
 
 // DeepSeek — OpenAI-совместимый формат: system идёт первым сообщением в messages.
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekRequest(
     val model: String,
     val messages: List<ChatMessage>,
@@ -28,15 +28,15 @@ private data class DeepSeekRequest(
     val stream: Boolean = false
 )
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekChoice(val message: ChatMessage)
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekResponse(@Json(name = "choices") val choices: List<DeepSeekChoice>)
 
 // Claude (Anthropic Messages API) — другой формат: system — отдельное поле,
 // а не сообщение с role="system" внутри messages.
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeRequest(
     val model: String,
     @Json(name = "max_tokens") val maxTokens: Int,
@@ -44,10 +44,10 @@ private data class ClaudeRequest(
     val messages: List<ChatMessage>
 )
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeContentBlock(val type: String, val text: String? = null)
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeResponse(val content: List<ClaudeContentBlock>)
 
 /**
@@ -80,6 +80,7 @@ class LLMClient(
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
+    private val transport = RetryingHttpClient(http, maxRetries)
 
     private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
     private val deepSeekRequestAdapter = moshi.adapter(DeepSeekRequest::class.java)
@@ -110,8 +111,14 @@ class LLMClient(
 
         // Проверка черновика — best effort: если у Claude сбой (сеть, лимит,
         // невалидный ключ), не роняем весь ответ, а тихо отдаём черновик R1.
-        runCatching { reviewWithClaude(claudeKey, systemPrompt, userText, draft) }
-            .getOrDefault(draft)
+        try {
+            reviewWithClaude(claudeKey, systemPrompt, userText, draft)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.w("LLMClient", "Claude review failed; using DeepSeek response", error)
+            draft
+        }
     }
 
     /**
@@ -164,12 +171,12 @@ class LLMClient(
                 .post(body)
                 .build()
 
-            executeWithRetry(request) { json ->
+            transport.execute(request) { json ->
                 claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
             }
         }
 
-    private fun completeDeepSeek(model: String, systemPrompt: String, history: List<ChatMessage>, userText: String): String {
+    private suspend fun completeDeepSeek(model: String, systemPrompt: String, history: List<ChatMessage>, userText: String): String {
         val apiKey = secrets?.getOrDefault(SecretsStore.KEY_DEEPSEEK_API_KEY, BuildConfig.DEEPSEEK_API_KEY)
             ?: BuildConfig.DEEPSEEK_API_KEY
         require(apiKey.isNotBlank()) { "DeepSeek API key is not set (see Settings or local.properties)" }
@@ -187,13 +194,13 @@ class LLMClient(
             .post(body)
             .build()
 
-        return executeWithRetry(request) { json ->
+        return transport.execute(request) { json ->
             deepSeekResponseAdapter.fromJson(json)?.choices?.firstOrNull()?.message?.content
         }
     }
 
     /** Не отвечает "с нуля" — проверяет и правит черновик от DeepSeek-R1. */
-    private fun reviewWithClaude(apiKey: String, originalSystemPrompt: String, userText: String, draft: String): String {
+    private suspend fun reviewWithClaude(apiKey: String, originalSystemPrompt: String, userText: String, draft: String): String {
         val reviewSystem = """
             $originalSystemPrompt
 
@@ -226,33 +233,10 @@ class LLMClient(
             .post(body)
             .build()
 
-        return executeWithRetry(request) { json ->
+        return transport.execute(request) { json ->
             claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
         }
     }
 
-    private fun executeWithRetry(request: Request, extract: (String) -> String?): String {
-        var lastError: Exception? = null
-        repeat(maxRetries + 1) { attempt ->
-            try {
-                http.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        val retryable = resp.code == 429 || resp.code in 500..599
-                        if (retryable && attempt < maxRetries) {
-                            lastError = IOException("Retryable LLM error ${resp.code}")
-                            return@use
-                        }
-                        throw IllegalStateException("LLM request failed: ${resp.code} ${resp.message}")
-                    }
-                    val json = resp.body?.string().orEmpty()
-                    return extract(json) ?: throw IllegalStateException("Empty LLM response")
-                }
-            } catch (e: IOException) {
-                lastError = e
-            }
-            if (attempt < maxRetries) Thread.sleep(500L * (attempt + 1))
-        }
-        throw lastError ?: IllegalStateException("LLM request failed after retries")
-    }
 }
 

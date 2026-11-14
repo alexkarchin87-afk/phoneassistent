@@ -10,6 +10,7 @@ name: Build debug APK
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch: {}
 
 jobs:
@@ -27,22 +28,38 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Accept licenses and install SDK platform/build-tools
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.7'
+          gradle-version: '8.9'
 
       - name: Write local.properties (sdk.dir only — секреты НЕ коммитим)
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
+      - name: Run Android unit tests
+        run: gradle testDebugUnitTest --stacktrace
+
+      - name: Test model preparation
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Prepare offline Russian speech model
+        run: python3 scripts/prepare_vosk_model.py
+
       - name: Assemble debug APK
         run: gradle assembleDebug --stacktrace
+
+      - name: Verify model assets in APK
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/uuid'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/am/final.mdl'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -50,3 +67,4 @@ jobs:
           name: voiceagent-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+

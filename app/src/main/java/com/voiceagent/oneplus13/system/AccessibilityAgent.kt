@@ -52,6 +52,8 @@ class AccessibilityAgent : AccessibilityService() {
     }
 
     private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>) {
+        // Editable fields can contain passwords, recovery codes, and private input.
+        if (node.isPassword || node.isEditable) return
         node.text?.toString()?.takeIf { it.isNotBlank() }?.let(out::add)
         node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let(out::add)
         for (i in 0 until node.childCount) {
@@ -104,3 +106,4 @@ class AccessibilityAgent : AccessibilityService() {
         dispatchGesture(gesture, null, null)
     }
 }
+
