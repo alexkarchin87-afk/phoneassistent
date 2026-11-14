@@ -125,13 +125,9 @@ class VoiceAgentService : Service() {
     private fun isConversationActive(): Boolean = System.currentTimeMillis() < conversationActiveUntil
 
     private fun containsWakeWord(text: String): Boolean =
-        WAKE_WORDS.any { text.contains(it, ignoreCase = true) }
+        WakeWord.contains(text)
 
-    private fun stripWakeWord(text: String): String {
-        var result = text
-        WAKE_WORDS.forEach { result = result.replace(it, "", ignoreCase = true) }
-        return result.trim()
-    }
+    private fun stripWakeWord(text: String): String = WakeWord.strip(text)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
         if (initFailed) START_NOT_STICKY else START_STICKY
@@ -255,7 +251,6 @@ class VoiceAgentService : Service() {
     companion object {
         private const val NOTIF_ID = 1001
         private const val CONVERSATION_WINDOW_MS = 20_000L
-        private val WAKE_WORDS = listOf("ваня", "эй ваня")
     }
 }
 
