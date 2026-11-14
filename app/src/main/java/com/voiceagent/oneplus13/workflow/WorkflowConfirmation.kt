@@ -8,14 +8,15 @@ internal fun describeWorkflowForConfirmation(workflow: Workflow): String? {
     val descriptions = mutableListOf<String>()
     var current = workflow.startBlock()
     while (current != null) {
-        if (!visited.add(current.id)) return null
-        val outgoing = workflow.connections.filter { it.fromId == current.id }
+        val block = current
+        if (!visited.add(block.id)) return null
+        val outgoing = workflow.connections.filter { it.fromId == block.id }
         if (outgoing.size > 1) return null
-        val params = current.params.toSortedMap().entries.joinToString(", ") { (key, value) ->
+        val params = block.params.toSortedMap().entries.joinToString(", ") { (key, value) ->
             "$key: $value"
         }
-        descriptions.add(current.type.displayName + if (params.isEmpty()) "" else " ($params)")
-        val next = workflow.next(current.id)
+        descriptions.add(block.type.displayName + if (params.isEmpty()) "" else " ($params)")
+        val next = workflow.next(block.id)
         if (outgoing.isNotEmpty() && next == null) return null
         current = next
     }
