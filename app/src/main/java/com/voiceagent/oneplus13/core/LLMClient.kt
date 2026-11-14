@@ -16,11 +16,11 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 data class ChatMessage(val role: String, val content: String)
 
 // DeepSeek — OpenAI-совместимый формат: system идёт первым сообщением в messages.
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekRequest(
     val model: String,
     val messages: List<ChatMessage>,
@@ -28,15 +28,15 @@ private data class DeepSeekRequest(
     val stream: Boolean = false
 )
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekChoice(val message: ChatMessage)
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekResponse(@Json(name = "choices") val choices: List<DeepSeekChoice>)
 
 // Claude (Anthropic Messages API) — другой формат: system — отдельное поле,
 // а не сообщение с role="system" внутри messages.
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeRequest(
     val model: String,
     @Json(name = "max_tokens") val maxTokens: Int,
@@ -44,10 +44,10 @@ private data class ClaudeRequest(
     val messages: List<ChatMessage>
 )
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeContentBlock(val type: String, val text: String? = null)
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeResponse(val content: List<ClaudeContentBlock>)
 
 /**

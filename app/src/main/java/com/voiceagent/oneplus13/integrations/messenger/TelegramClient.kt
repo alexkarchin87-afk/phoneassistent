@@ -13,7 +13,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 data class TgSendResult(val ok: Boolean)
 
 /**

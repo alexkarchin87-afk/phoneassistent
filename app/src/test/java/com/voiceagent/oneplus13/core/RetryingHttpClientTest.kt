@@ -14,6 +14,11 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class RetryingHttpClientTest {
+    @Test fun llmClientCanInitializeItsJsonAdapters() {
+        // This repository uses Moshi reflection; no generated adapters are built.
+        LLMClient()
+    }
+
     @Test fun retriesTemporaryHttpFailure() = runBlocking {
         val server = MockWebServer()
         try {

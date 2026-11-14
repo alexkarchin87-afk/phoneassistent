@@ -47,6 +47,9 @@ jobs:
       - name: Run Android unit tests
         run: gradle testDebugUnitTest --stacktrace
 
+      - name: Test model preparation
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
       - name: Prepare offline Russian speech model
         run: python3 scripts/prepare_vosk_model.py
 
