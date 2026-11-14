@@ -171,7 +171,7 @@ class VoiceAgentService : Service() {
      *  будильному слову" — применяется сразу, без перезапуска сервиса. */
     fun setOverlayAlwaysVisible(alwaysVisible: Boolean) {
         uiPrefs.overlayAlwaysVisible = alwaysVisible
-        if (alwaysVisible) overlay?.show() else overlay?.hide()
+        overlay?.setAlwaysVisible(alwaysVisible)
     }
 
     fun isOverlayAlwaysVisible(): Boolean = uiPrefs.overlayAlwaysVisible
@@ -181,7 +181,8 @@ class VoiceAgentService : Service() {
         overlay = OverlayBubbleController(
             context = applicationContext,
             scope = scope,
-            onSendText = { text -> scope.launch(Dispatchers.IO) { orchestrator.await().handleTranscript(text) } }
+            onSendText = { text -> scope.launch(Dispatchers.IO) { orchestrator.await().handleTranscript(text) } },
+            alwaysVisible = { uiPrefs.overlayAlwaysVisible }
         ).also {
             // По умолчанию пузырь появляется только по будильному слову
             // (flashOnWake из startListeningLoop). Явная настройка "показывать
@@ -276,6 +277,3 @@ class VoiceAgentService : Service() {
         private const val CONVERSATION_WINDOW_MS = 20_000L
     }
 }
-
-
-\n

@@ -44,5 +44,3 @@ class WorkflowStorage(private val context: Context) {
             ?: workflows.firstOrNull { it.name.contains(name, ignoreCase = true) }
     }
 }
-
-\n

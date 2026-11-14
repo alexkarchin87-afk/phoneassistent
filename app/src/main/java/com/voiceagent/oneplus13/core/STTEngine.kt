@@ -106,6 +106,3 @@ class STTEngine(private val context: Context) {
         old?.close()
     }
 }
-
-
-\n

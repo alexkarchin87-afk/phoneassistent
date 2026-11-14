@@ -62,5 +62,3 @@ class TTSEngine(
 
     fun shutdown() { tts.stop(); tts.shutdown() }
 }
-
-\n

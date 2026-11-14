@@ -75,5 +75,3 @@ class SecretsStore(context: Context) {
         fun pendingBotFatherTokenKey(projectName: String) = "pending_botfather_token:$projectName"
     }
 }
-
-\n

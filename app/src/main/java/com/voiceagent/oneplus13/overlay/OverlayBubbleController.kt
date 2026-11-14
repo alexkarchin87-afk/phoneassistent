@@ -56,10 +56,11 @@ private val QUICK_PROMPTS = listOf("Что на экране?", "Что это?"
 class OverlayBubbleController(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val onSendText: (String) -> Unit
+    private val onSendText: (String) -> Unit,
+    private val alwaysVisible: () -> Boolean = { false }
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private val lifecycleOwner = OverlayLifecycleOwner()
+    private var lifecycleOwner: OverlayLifecycleOwner? = null
     private val messages = SnapshotStateList<ChatMessage>()
 
     private var composeView: ComposeView? = null
@@ -82,6 +83,7 @@ class OverlayBubbleController(
 
     private fun scheduleAutoHide() {
         autoHideJob?.cancel()
+        if (alwaysVisible()) return
         autoHideJob = scope.launch {
             delay(AUTO_HIDE_MS)
             hide()
@@ -90,6 +92,16 @@ class OverlayBubbleController(
 
     private fun pauseAutoHide() {
         autoHideJob?.cancel()
+    }
+
+    fun setAlwaysVisible(enabled: Boolean) {
+        if (enabled) {
+            autoHideJob?.cancel()
+            autoHideJob = null
+            show()
+        } else {
+            hide()
+        }
     }
 
     fun show() {
@@ -114,9 +126,11 @@ class OverlayBubbleController(
         params = layoutParams
 
         val view = ComposeView(context)
-        lifecycleOwner.attachToView(view)
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_START)
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        // A destroyed lifecycle cannot be attached again when the bubble reappears.
+        val owner = OverlayLifecycleOwner()
+        owner.attachToView(view)
+        owner.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        owner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
 
         view.setContent {
@@ -134,9 +148,10 @@ class OverlayBubbleController(
         }
 
         runCatching { windowManager.addView(view, layoutParams) }.onFailure {
-            lifecycleOwner.onDestroy()
+            owner.onDestroy()
             return
         }
+        lifecycleOwner = owner
         composeView = view
 
         eventsJob = scope.launch {
@@ -173,7 +188,8 @@ class OverlayBubbleController(
         composeView?.let { runCatching { windowManager.removeView(it) } }
         composeView = null
         params = null
-        lifecycleOwner.onDestroy()
+        lifecycleOwner?.onDestroy()
+        lifecycleOwner = null
     }
 
     private fun overlayWindowType(): Int =

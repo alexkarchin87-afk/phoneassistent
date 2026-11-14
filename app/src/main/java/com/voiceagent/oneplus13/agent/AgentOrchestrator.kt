@@ -806,6 +806,3 @@ class AgentOrchestrator(
         private val LLM_ACTIONS = CONFIRM_ACTIONS + setOf("lecture_summary", "now_playing", "run_diagnostics")
     }
 }
-
-
-\n

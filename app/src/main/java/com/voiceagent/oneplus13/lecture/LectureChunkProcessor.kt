@@ -25,5 +25,3 @@ class LectureChunkProcessor {
         return result.replace(whitespace, " ").trim()
     }
 }
-
-\n

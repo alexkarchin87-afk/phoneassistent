@@ -51,4 +51,3 @@ class LectureCommands(context: Context, llm: LLMClient, private val scope: Corou
 
     fun latestSummary(): String? = storage.latestSummary()
 }
-\n
