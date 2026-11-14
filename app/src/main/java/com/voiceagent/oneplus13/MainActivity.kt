@@ -1,17 +1,21 @@
 package com.voiceagent.oneplus13
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.ServiceConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
@@ -47,6 +51,18 @@ class MainActivity : ComponentActivity() {
     private var signedInEmail: String? by mutableStateOf(null)
     private var gateUnlocked by mutableStateOf(false)
     private var signInError: String? by mutableStateOf(null)
+
+    private val agentPermissions = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+            startVoiceAgentWithPermission()
+        } else {
+            isAgentRunning = false
+            Toast.makeText(this, "Для голосового режима разреши доступ к микрофону.", Toast.LENGTH_LONG).show()
+        }
+    }
 
     private val signInLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         when (val signInResult = accountManager.handleSignInResult(result.data)) {
@@ -165,10 +181,36 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startVoiceAgent() {
+        val needed = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (needed.isNotEmpty()) {
+            agentPermissions.launch(needed.toTypedArray())
+        } else {
+            startVoiceAgentWithPermission()
+        }
+    }
+
+    private fun startVoiceAgentWithPermission() {
         val intent = Intent(this, VoiceAgentService::class.java)
-        startForegroundService(intent)
-        bindToService()
-        isAgentRunning = true
+        try {
+            ContextCompat.startForegroundService(this, intent)
+            bindToService()
+            isAgentRunning = true
+        } catch (error: SecurityException) {
+            isAgentRunning = false
+            Toast.makeText(this, "Не удалось запустить микрофон. Проверь разрешения приложения.", Toast.LENGTH_LONG).show()
+        } catch (error: IllegalStateException) {
+            isAgentRunning = false
+            Toast.makeText(this, "Не удалось запустить сервис. Попробуй ещё раз из приложения.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun stopVoiceAgent() {
