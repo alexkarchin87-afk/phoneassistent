@@ -2,7 +2,6 @@ package com.voiceagent.oneplus13.system
 
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
 import androidx.core.content.FileProvider
@@ -48,8 +47,9 @@ class SystemController(private val context: Context) {
     private fun resolveByLabel(query: String): String? {
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val pm = context.packageManager
-        val candidates = pm.queryIntentActivities(launcherIntent, PackageManager.MATCH_DEFAULT_ONLY)
         val normalizedQuery = query.trim().lowercase()
+        if (normalizedQuery.isBlank()) return null
+        val candidates = pm.queryIntentActivities(launcherIntent, 0)
 
         // Сначала точное совпадение по названию, потом — частичное, чтобы
         // "Карты" не подтягивало случайно "Автокарты" раньше настоящих "Google Карты".

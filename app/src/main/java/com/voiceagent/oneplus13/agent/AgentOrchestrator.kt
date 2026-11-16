@@ -432,10 +432,22 @@ class AgentOrchestrator(
 
     private suspend fun dispatch(action: String, params: Map<String, String>) {
         when (action) {
-            "open_app" -> params["package"]?.let { systemController.openApp(it) }
+            "open_app" -> {
+                val name = params["package"].orEmpty()
+                val opened = name.isNotBlank() && systemController.openApp(name)
+                val message = if (opened) "Открываю $name." else "Не нашёл приложение $name."
+                AgentEventBus.publish(AgentEvent.Reply(message))
+                tts.speak(message)
+            }
             "open_url" -> params["url"]?.let { systemController.openUrl(it) }
             "set_volume" -> params["percent"]?.toIntOrNull()?.let { systemController.setMediaVolume(it) }
-            "tap_text" -> params["label"]?.let { systemController.tapByText(it) }
+            "tap_text" -> {
+                val label = params["label"].orEmpty()
+                val tapped = label.isNotBlank() && systemController.tapByText(label)
+                val message = if (tapped) "Нажал $label." else "Не удалось нажать $label. Проверь специальный доступ и видимость кнопки."
+                AgentEventBus.publish(AgentEvent.Reply(message))
+                tts.speak(message)
+            }
             "swipe_up" -> systemController.swipeUp()
             "lecture_start" -> tts.speak(
                 if (lectureCommands.start(params["title"] ?: "Лекция")) "Начал запись лекции."
@@ -747,15 +759,14 @@ class AgentOrchestrator(
      *  приложение сейчас ни играло (не только Яндекс Музыка). */
     private suspend fun handleNowPlaying() {
         val track = systemController.nowPlaying()
-        if (track == null) {
-            tts.speak(
-                "Не вижу, что сейчас играет — либо ничего не воспроизводится, либо ещё " +
-                    "не выдан доступ к уведомлениям (нужен для чтения медиасессий)."
-            )
-            return
+        val message = if (track == null) {
+            "Не вижу, что сейчас играет. Проверь воспроизведение и доступ к уведомлениям."
+        } else {
+            val artistPart = track.artist?.let { " — $it" }.orEmpty()
+            "Сейчас играет: ${track.title}$artistPart."
         }
-        val artistPart = track.artist?.let { " — $it" }.orEmpty()
-        tts.speak("Сейчас играет: ${track.title}$artistPart.")
+        AgentEventBus.publish(AgentEvent.Reply(message))
+        tts.speak(message)
     }
 
     /** "Добавь в избранное в Яндекс Музыке" — открывает Яндекс Музыку (если там что-то
