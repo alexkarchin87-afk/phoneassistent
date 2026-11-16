@@ -34,13 +34,14 @@ def wait_for(label, timeout=30):
 adb('install', '-r', sys.argv[1])
 adb('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
 tap(wait_for('Настройки', 60))
-for _ in range(6):
+wait_for('Голосовой агент')
+for _ in range(12):
     node = find('Ключи, память и диагностика')
     if node is not None: break
     adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
     time.sleep(1)
 else:
-    raise AssertionError('Settings entry not found')
+    raise AssertionError('Settings entry not found: '+ET.tostring(tree(), encoding='unicode'))
 tap(node)
 wait_for('Ключи и диагностика')
 for _ in range(8):
@@ -48,5 +49,5 @@ for _ in range(8):
     adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
     time.sleep(1)
 else:
-    raise AssertionError('API key field is not accessible')
+    raise AssertionError('API key field is not accessible: '+ET.tostring(tree(), encoding='unicode'))
 print('Main screen and API settings opened without registration.')
