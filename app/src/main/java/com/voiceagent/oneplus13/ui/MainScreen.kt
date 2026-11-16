@@ -92,7 +92,7 @@ data class AgentControls(
     val onOpenWorkflowWorkshop: () -> Unit
 )
 
-private val QUICK_PROMPTS = listOf("Что на экране?", "Что это?", "Что сейчас играет?", "Что нового?", "Заверши лекцию")
+private val QUICK_PROMPTS = listOf("Который час?", "Какой сегодня день?", "Что сейчас играет?", "Что нового?", "Заверши лекцию")
 
 @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable

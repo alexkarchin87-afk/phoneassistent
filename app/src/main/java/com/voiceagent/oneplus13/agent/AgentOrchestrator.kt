@@ -239,6 +239,12 @@ class AgentOrchestrator(
             }
         }
 
+        localAnswer(text)?.let { answer ->
+            AgentEventBus.publish(AgentEvent.Reply(answer))
+            tts.speak(answer)
+            return
+        }
+
         workflowStorage.findByTriggerIn(text)?.let { workflow ->
             requestConfirmation("run_workflow", mapOf("name" to workflow.name))
             return
@@ -285,8 +291,9 @@ class AgentOrchestrator(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            AgentEventBus.publish(AgentEvent.Error("Не удалось обработать команду", t))
-            tts.speak("Что-то пошло не так, попробуй ещё раз.")
+            val message = friendlyAssistantError(t)
+            AgentEventBus.publish(AgentEvent.Error(message, t))
+            tts.speak(message)
         }
     }
 

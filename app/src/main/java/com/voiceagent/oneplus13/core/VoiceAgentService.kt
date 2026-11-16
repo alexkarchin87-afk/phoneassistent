@@ -71,6 +71,7 @@ class VoiceAgentService : Service() {
                 } catch (error: Exception) {
                     initFailed = true
                     android.util.Log.e("VoiceAgentService", "Orchestrator initialization failed", error)
+                    AgentEventBus.publish(AgentEvent.Error("Не удалось подготовить агента. Перезапусти приложение и проверь настройки.", error))
                     stopSelf()
                     throw error
                 }

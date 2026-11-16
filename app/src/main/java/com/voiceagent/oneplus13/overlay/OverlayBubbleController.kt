@@ -41,7 +41,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private val QUICK_PROMPTS = listOf("Что на экране?", "Что это?", "Что сейчас играет?", "Что нового?", "Заверши лекцию")
+private val QUICK_PROMPTS = listOf("Который час?", "Какой сегодня день?", "Что сейчас играет?", "Что нового?", "Заверши лекцию")
 
 /**
  * Настоящий системный "пузырь" поверх ЛЮБОГО приложения — как чат-хед у

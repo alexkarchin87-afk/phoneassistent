@@ -144,22 +144,12 @@ object Diagnostics {
         context.assets.list("model-ru-small")?.isNotEmpty() == true
     }.getOrDefault(false)
 
-    private fun checkRootAccess(): DiagnosticCheck {
-        // Только проверяет доступность su — ничего не переключает и не меняет.
-        val hasRoot = try {
-            val exit = ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start().waitFor()
-            exit == 0
-        } catch (_: java.io.IOException) {
-            false
-        }
-        return DiagnosticCheck(
-            "Root-доступ (KernelSU/Magisk)",
-            if (hasRoot) CheckStatus.OK else CheckStatus.WARNING,
-            if (hasRoot) "Есть" else "Нет — команды вроде «выключи вайфай» через root работать не будут, " +
-                "остальное не пострадает",
-            fixSettingsAction = null
-        )
-    }
+    private fun checkRootAccess(): DiagnosticCheck = DiagnosticCheck(
+        "Root-доступ (KernelSU/Magisk)",
+        CheckStatus.WARNING,
+        "Проверяется при выполнении root-команды; для остальных функций не нужен.",
+        fixSettingsAction = null
+    )
 
     private fun isServiceEnabled(context: Context, flatComponentName: String): Boolean {
         val enabledServices = Settings.Secure.getString(

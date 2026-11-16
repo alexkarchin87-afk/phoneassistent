@@ -44,6 +44,11 @@ import com.voiceagent.oneplus13.ui.VaIcons
 import com.voiceagent.oneplus13.ui.VaSwitch
 import com.voiceagent.oneplus13.ui.theme.VoiceAgentTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,7 +61,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.voiceagent.oneplus13.account.AccountManager
 import com.voiceagent.oneplus13.core.BackupManager
 import com.voiceagent.oneplus13.core.CrashLogger
 import com.voiceagent.oneplus13.core.FeatureRequests
@@ -141,8 +145,6 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val secrets = remember { SecretsStore(context) }
-    val role = remember { AccountManager(context).currentRole() }
-    val isAdmin = role == AccountManager.Role.ADMIN
 
     var deepSeekKey by remember { mutableStateOf(secrets.get(SecretsStore.KEY_DEEPSEEK_API_KEY).orEmpty()) }
     var claudeKey by remember { mutableStateOf(secrets.get(SecretsStore.KEY_CLAUDE_API_KEY).orEmpty()) }
@@ -162,31 +164,7 @@ fun SettingsScreen(
                     DiagnosticsSection()
                 }
 
-                SettingsGroup(title = "Аккаунт") {
-                    val email = remember { AccountManager(context).ownerEmail() }
-                    SettingsRow(
-                        icon = VaIcons.Info,
-                        title = "Вход через Google",
-                        subtitle = if (email != null) {
-                            "Вы вошли как $email. Управлять входом можно на начальном экране."
-                        } else {
-                            "Вход не выполнен."
-                        }
-                    )
-                }
-
-                if (!isAdmin) {
-                    SettingsGroup(title = "Доступ") {
-                        SettingsRow(
-                            icon = VaIcons.Info,
-                            title = "Обычный доступ",
-                            subtitle = "Общие ключи API и резервная копия видны только тому аккаунту, который первым настраивал этот телефон."
-                        )
-                    }
-                }
-
-                if (isAdmin) {
-                    SettingsGroup(title = "Ключи ассистента") {
+                    SettingsGroup(title = "Ключи ассистента", description = "Для ответов ИИ нужен ключ DeepSeek API. После сохранения перезапусти агента.") {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             KeyField("DeepSeek API key", deepSeekKey, revealKeys) { deepSeekKey = it; saved = false }
                             KeyField("Claude (Anthropic) API key", claudeKey, revealKeys) { claudeKey = it; saved = false }
@@ -265,7 +243,6 @@ fun SettingsScreen(
                             }
                         }
                     }
-                }
 
                 SettingsGroup(title = "Что помню о тебе") { MemorySection() }
 
@@ -275,7 +252,6 @@ fun SettingsScreen(
                         "это очередь на следующую пересборку приложения (например, через Claude Code)."
                 ) { FeatureRequestsSection() }
 
-                if (isAdmin) {
                     SettingsGroup(
                         title = "Резервная копия",
                         description = "Файл настроек и сохранённых фактов для переноса на новый телефон. " +
@@ -297,7 +273,6 @@ fun SettingsScreen(
                             trailing = { ChevronTrailing() }
                         )
                     }
-                }
 
                 SettingsGroup(title = "Если Ваня упал") {
                     SettingsRow(
@@ -345,9 +320,16 @@ private fun KeyField(label: String, value: String, reveal: Boolean, onChange: (S
 private fun DiagnosticsSection() {
     val context = LocalContext.current
     val cs = MaterialTheme.colorScheme
-    var checks by remember { mutableStateOf(Diagnostics.runAll(context)) }
+    val scope = rememberCoroutineScope()
+    var checks by remember { mutableStateOf<List<com.voiceagent.oneplus13.system.DiagnosticCheck>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        checks = withContext(Dispatchers.IO) { Diagnostics.runAll(context.applicationContext) }
+        loading = false
+    }
 
     Column {
+        if (loading) SettingsRow(icon = VaIcons.Pulse, title = "Проверяем настройки…")
         checks.forEachIndexed { index, check ->
             if (index > 0) SettingsDivider()
             val icon: ImageVector = when (check.status) {
@@ -375,7 +357,13 @@ private fun DiagnosticsSection() {
         SettingsRow(
             icon = VaIcons.Pulse,
             title = "Проверить заново",
-            onClick = { checks = Diagnostics.runAll(context) },
+            onClick = {
+                if (!loading) scope.launch {
+                    loading = true
+                    try { checks = withContext(Dispatchers.IO) { Diagnostics.runAll(context.applicationContext) } }
+                    finally { loading = false }
+                }
+            },
             trailing = { ChevronTrailing() }
         )
     }

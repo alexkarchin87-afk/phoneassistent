@@ -81,6 +81,5 @@ dependencies {
     implementation(libs.moshi.kotlin)
     implementation(libs.okhttp.logging)
     implementation(libs.androidx.security.crypto)
-    implementation(libs.play.services.auth)
 }
 
