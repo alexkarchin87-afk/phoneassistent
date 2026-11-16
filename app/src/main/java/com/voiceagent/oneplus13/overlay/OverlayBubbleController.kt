@@ -32,6 +32,9 @@ import com.voiceagent.oneplus13.core.AgentEventBus
 import com.voiceagent.oneplus13.ui.ChatMessage
 import com.voiceagent.oneplus13.ui.FloatingSparkButton
 import com.voiceagent.oneplus13.ui.WindowsCornerPopup
+import com.voiceagent.oneplus13.ui.AgentPhase
+import com.voiceagent.oneplus13.ui.rememberAgentPhase
+import com.voiceagent.oneplus13.ui.theme.VoiceAgentTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -134,6 +137,7 @@ class OverlayBubbleController(
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
 
         view.setContent {
+            VoiceAgentTheme {
             BubbleContent(
                 windowManager = windowManager,
                 view = view,
@@ -145,6 +149,7 @@ class OverlayBubbleController(
                 },
                 onPanelOpenChanged = { open -> if (open) pauseAutoHide() else scheduleAutoHide() }
             )
+            }
         }
 
         runCatching { windowManager.addView(view, layoutParams) }.onFailure {
@@ -233,7 +238,7 @@ private fun BubbleContent(
 ) {
     var panelVisible by remember { mutableStateOf(false) }
     val statusText by AgentEventBus.lastStatus.collectAsState()
-    val isListening = statusText.contains("Слуш", ignoreCase = true)
+    val isListening = rememberAgentPhase(true, statusText) == AgentPhase.LISTENING
     val density = LocalDensity.current
     val tapThresholdPx = with(density) { 8.dp.toPx() }
 
