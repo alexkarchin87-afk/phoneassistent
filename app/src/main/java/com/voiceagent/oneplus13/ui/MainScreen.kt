@@ -468,7 +468,7 @@ private fun HomeFeed(
         item {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    SectionLabel("Недавние запросы", modifier = Modifier.weight(1f))
+                    SectionLabel("Запросы за этот сеанс", modifier = Modifier.weight(1f))
                     if (history.isNotEmpty()) {
                         TextButton(onClick = onClearHistory) {
                             Text("Очистить", color = cs.onSurfaceVariant)
@@ -603,7 +603,7 @@ private fun HistorySheet(
                 .verticalScroll(rememberScrollState())
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("История запросов", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("Запросы за этот сеанс", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 if (history.isNotEmpty()) {
                     TextButton(onClick = onClear) { Text("Очистить", color = cs.onSurfaceVariant) }
                 }
