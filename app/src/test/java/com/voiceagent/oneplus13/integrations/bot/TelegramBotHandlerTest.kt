@@ -7,8 +7,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TelegramBotHandlerTest {
-    private fun msg(chat: String, text: String, private: Boolean = true) =
-        Msg(MessengerPlatform.TELEGRAM, chat, "Alice", text, isPrivateUserChat = private)
+    private fun msg(chat: String, text: String, isPrivate: Boolean = true) =
+        Msg(MessengerPlatform.TELEGRAM, chat, "Alice", text, isPrivateUserChat = isPrivate)
 
     @Test fun pairingAndOwnerOnlyAnswers() = runBlocking {
         var owner: String? = null
