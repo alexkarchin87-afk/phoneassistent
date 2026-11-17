@@ -31,7 +31,7 @@ class TelegramClient(context: Context? = null, botToken: String? = null, private
         .readTimeout(35, TimeUnit.SECONDS) // long-poll friendly
         .build()
 
-    private val base = "$apiBase/bot${botToken.trim()}"
+    private val base = "$apiBase/bot${this.botToken.trim()}"
 
     suspend fun botUsername(): String {
         val request = Request.Builder().url("$base/getMe").get().build()
