@@ -68,6 +68,7 @@ class SecretsStore(context: Context) {
         const val KEY_DEEPSEEK_API_KEY = "deepseek_api_key"
         const val KEY_CLAUDE_API_KEY = "claude_api_key"
         const val KEY_TELEGRAM_BOT_TOKEN = "telegram_bot_token"
+        const val KEY_TELEGRAM_OWNER_ID = "telegram_owner_id"
         const val KEY_MAX_SERVICE_TOKEN = "max_service_token"
 
         /** Prefix for tokens captured automatically from BotFather notifications,

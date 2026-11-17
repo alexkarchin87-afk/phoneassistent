@@ -44,6 +44,7 @@ import com.voiceagent.oneplus13.ui.VaIcons
 import com.voiceagent.oneplus13.ui.VaSwitch
 import com.voiceagent.oneplus13.ui.theme.VoiceAgentTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +72,7 @@ import com.voiceagent.oneplus13.system.Diagnostics
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
 import com.voiceagent.oneplus13.integrations.bot.TelegramBotService
+import com.voiceagent.oneplus13.integrations.bot.TelegramBotState
 import java.io.File
 
 /**
@@ -152,7 +154,7 @@ fun SettingsScreen(
     var maxToken by remember { mutableStateOf(secrets.get(SecretsStore.KEY_MAX_SERVICE_TOKEN).orEmpty()) }
     var revealKeys by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
-    var botStatus by remember { mutableStateOf("") }
+    val botState by TelegramBotState.state.collectAsState()
     val projectSecrets = remember { listProjectSecrets(context) }
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -175,7 +177,14 @@ fun SettingsScreen(
                                     onClick = {
                                         secrets.put(SecretsStore.KEY_DEEPSEEK_API_KEY, deepSeekKey)
                                         secrets.put(SecretsStore.KEY_CLAUDE_API_KEY, claudeKey)
-                                        secrets.put(SecretsStore.KEY_TELEGRAM_BOT_TOKEN, telegramToken)
+                                        val newToken = telegramToken.trim()
+                                        if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).orEmpty() != newToken) {
+                                            context.stopService(Intent(context, TelegramBotService::class.java))
+                                            secrets.remove(SecretsStore.KEY_TELEGRAM_OWNER_ID)
+                                            TelegramBotState.update { it.copy(running = false, status = "Токен изменён. Запусти Telegram и подтверди чат заново.", candidateId = null, candidateName = null, approvedId = null) }
+                                        }
+                                        telegramToken = newToken
+                                        secrets.put(SecretsStore.KEY_TELEGRAM_BOT_TOKEN, newToken)
                                         secrets.put(SecretsStore.KEY_MAX_SERVICE_TOKEN, maxToken)
                                         saved = true
                                     },
@@ -191,33 +200,63 @@ fun SettingsScreen(
 
                     SettingsGroup(
                         title = "Telegram",
-                        description = "Сначала сохрани токен. Приём включается вручную; MAX пока не подключён."
+                        description = "Сохрани токен бота и ключ DeepSeek, запусти Telegram, отправь боту /start и подтверди свой личный чат здесь. Сообщения подтверждённого чата отправляются в DeepSeek. Управление телефоном из Telegram пока недоступно."
                     ) {
+                        SettingsRow(
+                            icon = VaIcons.Info,
+                            title = "Состояние Telegram",
+                            subtitle = botState.status
+                        )
+                        SettingsDivider()
                         SettingsRow(
                             icon = VaIcons.Power,
                             title = "Запустить Telegram",
-                            subtitle = botStatus.takeIf { it.isNotBlank() },
                             onClick = {
-                                botStatus = if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).isNullOrBlank()) {
-                                    "Сначала сохрани токен Telegram."
+                                if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).isNullOrBlank()) {
+                                    TelegramBotState.update { it.copy(status = "Сначала сохрани токен Telegram.") }
                                 } else {
                                     runCatching {
-                                        ContextCompat.startForegroundService(
-                                            context, Intent(context, TelegramBotService::class.java)
-                                        )
-                                        "Запрос на запуск отправлен; проверь уведомление сервиса."
-                                    }.getOrElse { "Не удалось запустить сервис." }
+                                        ContextCompat.startForegroundService(context, Intent(context, TelegramBotService::class.java))
+                                    }.onFailure { TelegramBotState.update { it.copy(status = "Не удалось запустить сервис Telegram.") } }
                                 }
                             },
                             trailing = { ChevronTrailing() }
                         )
+                        botState.candidateId?.let { candidateId ->
+                            SettingsDivider()
+                            SettingsRow(
+                                icon = VaIcons.Check,
+                                title = "Подтвердить личный чат",
+                                subtitle = "${botState.candidateName.orEmpty()} · ID $candidateId. Проверь, что это твой аккаунт, и нажми здесь.",
+                                onClick = {
+                                    if (TelegramBotState.state.value.candidateId == candidateId && TelegramBotState.state.value.running) {
+                                        secrets.put(SecretsStore.KEY_TELEGRAM_OWNER_ID, candidateId)
+                                        TelegramBotState.update { it.copy(approvedId = candidateId, candidateId = null, candidateName = null, status = "Чат подтверждён. Напиши боту /start.") }
+                                    }
+                                },
+                                trailing = { ChevronTrailing() }
+                            )
+                        }
+                        botState.approvedId?.let { approvedId ->
+                            SettingsDivider()
+                            SettingsRow(
+                                icon = VaIcons.Close,
+                                title = "Отключить привязанный чат",
+                                subtitle = "Подтверждён ID $approvedId",
+                                onClick = {
+                                    secrets.remove(SecretsStore.KEY_TELEGRAM_OWNER_ID)
+                                    TelegramBotState.update { it.copy(approvedId = null, candidateId = null, candidateName = null, status = "Привязка удалена. Для новой отправь боту /start.") }
+                                },
+                                trailing = { ChevronTrailing() }
+                            )
+                        }
                         SettingsDivider()
                         SettingsRow(
                             icon = VaIcons.Power,
                             title = "Остановить Telegram",
                             onClick = {
                                 context.stopService(Intent(context, TelegramBotService::class.java))
-                                botStatus = "Сервис остановлен."
+                                TelegramBotState.update { it.copy(running = false, status = "Остановлен", candidateId = null, candidateName = null) }
                             },
                             trailing = { ChevronTrailing() }
                         )

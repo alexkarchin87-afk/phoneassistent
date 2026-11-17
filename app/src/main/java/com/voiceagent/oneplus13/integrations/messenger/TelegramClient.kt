@@ -20,7 +20,7 @@ data class TgSendResult(val ok: Boolean)
  * Thin client for the official Telegram Bot API. Used both to send messages the
  * agent composes and, via long-polling in TelegramBotService, to receive them.
  */
-class TelegramClient(context: Context? = null, botToken: String? = null) {
+class TelegramClient(context: Context? = null, botToken: String? = null, private val apiBase: String = "https://api.telegram.org") {
 
     private val botToken: String = botToken
         ?: context?.let { SecretsStore(it) }?.getOrDefault(SecretsStore.KEY_TELEGRAM_BOT_TOKEN, BuildConfig.TELEGRAM_BOT_TOKEN)
@@ -31,13 +31,23 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
         .readTimeout(35, TimeUnit.SECONDS) // long-poll friendly
         .build()
 
-    private val base = "https://api.telegram.org/bot$botToken"
+    private val base = "$apiBase/bot${botToken.trim()}"
+
+    suspend fun botUsername(): String {
+        val request = Request.Builder().url("$base/getMe").get().build()
+        val response = http.newCall(request).awaitBody()
+        if (response.code !in 200..299) throw java.io.IOException("Telegram HTTP ${response.code}")
+        val root = org.json.JSONObject(response.body)
+        if (!root.optBoolean("ok")) throw java.io.IOException("Telegram API error")
+        return root.optJSONObject("result")?.optString("username").orEmpty()
+    }
 
     suspend fun sendMessage(chatId: String, text: String): Boolean {
         val json = org.json.JSONObject().put("chat_id", chatId).put("text", text).toString()
         val body = json.toRequestBody("application/json".toMediaType())
         val request = Request.Builder().url("$base/sendMessage").post(body).build()
-        return http.newCall(request).awaitBody().code in 200..299
+        val response = http.newCall(request).awaitBody()
+        return response.code in 200..299 && org.json.JSONObject(response.body).optBoolean("ok")
     }
 
     /** Long-polls getUpdates and returns any new messages as platform-agnostic Msg objects. */
@@ -53,6 +63,7 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
 
     private fun parseUpdates(json: String, currentOffset: Long): Pair<Long, List<Msg>> {
         val root = org.json.JSONObject(json)
+        if (!root.optBoolean("ok")) throw java.io.IOException("Telegram API error")
         val results = root.optJSONArray("result") ?: return currentOffset to emptyList()
         var maxUpdateId = currentOffset
         val msgs = mutableListOf<Msg>()
@@ -69,7 +80,10 @@ class TelegramClient(context: Context? = null, botToken: String? = null) {
                     platform = MessengerPlatform.TELEGRAM,
                     chatId = chat?.optString("id").orEmpty(),
                     senderName = from?.optString("first_name").orEmpty(),
-                    text = text
+                    text = text,
+                    isPrivateUserChat = chat != null && from != null && chat.optString("type") == "private" &&
+                        chat.optString("id").isNotBlank() && chat.optString("id") == from.optString("id") &&
+                        !from.optBoolean("is_bot")
                 )
             )
         }

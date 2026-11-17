@@ -12,5 +12,6 @@ data class Msg(
     val chatId: String,
     val senderName: String,
     val text: String,
-    val timestampMillis: Long = System.currentTimeMillis()
+    val timestampMillis: Long = System.currentTimeMillis(),
+    val isPrivateUserChat: Boolean = false
 )
