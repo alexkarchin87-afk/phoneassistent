@@ -6,10 +6,14 @@ import android.media.AudioManager
 import android.net.Uri
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
+import java.net.HttpURLConnection
 
 /**
  * Facade over device-level actions the agent can take: launching apps, adjusting
@@ -83,8 +87,14 @@ class SystemController(private val context: Context) {
 
     fun readScreen(): List<String> = AccessibilityAgent.instance?.dumpVisibleText() ?: emptyList()
 
-    fun swipeUp() {
-        AccessibilityAgent.instance?.swipe(x1 = 540f, y1 = 1600f, x2 = 540f, y2 = 400f)
+    suspend fun swipeUp(): Boolean {
+        val service = AccessibilityAgent.instance ?: return false
+        val metrics = context.resources.displayMetrics
+        if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0) return false
+        return service.swipe(
+            x1 = metrics.widthPixels * 0.5f, y1 = metrics.heightPixels * 0.8f,
+            x2 = metrics.widthPixels * 0.5f, y2 = metrics.heightPixels * 0.3f
+        )
     }
 
     /** What's currently playing, from any app with an active media session — null if
@@ -122,22 +132,27 @@ class SystemController(private val context: Context) {
      */
     suspend fun installApp(nameOrUrl: String): InstallOutcome {
         val trimmed = nameOrUrl.trim()
-        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-            openPlayStoreListing(trimmed)
-            return InstallOutcome.OpenedPlayStore
-        }
-        if (!trimmed.substringBefore("?").endsWith(".apk", ignoreCase = true)) {
-            // Не прямая ссылка на apk (например ссылка на страницу в Google Play или
-            // сторонний каталог) — безопаснее просто открыть её в браузере, чем гадать.
-            openUrl(trimmed)
-            return InstallOutcome.OpenedUrl
-        }
+        if (trimmed.isEmpty()) return InstallOutcome.Failed("Название приложения или ссылка пусты.")
         return try {
-            val apkFile = downloadApk(trimmed)
-            promptInstall(apkFile)
-            InstallOutcome.PromptedInstall
-        } catch (e: Exception) {
-            InstallOutcome.Failed(e.message ?: "download error")
+            if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+                openPlayStoreListing(trimmed)
+                InstallOutcome.OpenedPlayStore
+            } else if (!trimmed.substringBefore("?").endsWith(".apk", ignoreCase = true)) {
+                openUrl(trimmed)
+                InstallOutcome.OpenedUrl
+            } else if (!trimmed.startsWith("https://")) {
+                InstallOutcome.Failed("Для загрузки APK нужна ссылка HTTPS.")
+            } else if (!context.packageManager.canRequestPackageInstalls()) {
+                InstallOutcome.NeedsInstallPermission
+            } else {
+                val apkFile = downloadApk(trimmed)
+                promptInstall(apkFile)
+                InstallOutcome.PromptedInstall
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            InstallOutcome.Failed("Не удалось открыть установщик или скачать APK. Проверь интернет и системные ограничения.")
         }
     }
 
@@ -152,12 +167,37 @@ class SystemController(private val context: Context) {
     }
 
     private suspend fun downloadApk(url: String): File = withContext(Dispatchers.IO) {
-        val dir = File(context.getExternalFilesDir(null), "downloads").apply { mkdirs() }
+        val dir = File(context.getExternalFilesDir(null) ?: throw java.io.IOException("No storage"), "downloads")
+        if (!dir.exists() && !dir.mkdirs()) throw java.io.IOException("Cannot create download directory")
         val file = File(dir, "download_${System.currentTimeMillis()}.apk")
-        URL(url).openStream().use { input ->
-            file.outputStream().use { output -> input.copyTo(output) }
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
         }
-        file
+        try {
+            connection.connect()
+            if (connection.url.protocol != "https" || connection.responseCode !in 200..299)
+                throw java.io.IOException("Download failed")
+            val maxBytes = 250L * 1024 * 1024
+            if (connection.contentLengthLong > maxBytes) throw java.io.IOException("Download too large")
+            var total = 0L
+            connection.inputStream.use { input -> file.outputStream().use { output ->
+                val buffer = ByteArray(32 * 1024)
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > maxBytes) throw java.io.IOException("Download too large")
+                    output.write(buffer, 0, count)
+                }
+            } }
+            file
+        } catch (error: Exception) {
+            file.delete()
+            throw error
+        } finally { connection.disconnect() }
     }
 
     private fun promptInstall(apkFile: File) {
@@ -173,6 +213,7 @@ class SystemController(private val context: Context) {
         object OpenedPlayStore : InstallOutcome()
         object OpenedUrl : InstallOutcome()
         object PromptedInstall : InstallOutcome()
+        object NeedsInstallPermission : InstallOutcome()
         data class Failed(val reason: String) : InstallOutcome()
     }
 

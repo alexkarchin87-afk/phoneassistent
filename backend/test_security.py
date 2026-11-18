@@ -33,6 +33,13 @@ class BackendSecurityTest(unittest.TestCase):
             server.submit_job(request, self.auth)
         self.assertEqual(429, raised.exception.status_code)
 
+    def test_unconfigured_worker_never_returns_a_fake_success(self):
+        server.JOBS["job"] = server.Job3D(id="job", kind="test", params_json="{}")
+        server.run_job_stub("job")
+        self.assertEqual(server.Job3DStatus.FAILED, server.JOBS["job"].status)
+        self.assertIsNone(server.JOBS["job"].result_url)
+        self.assertIn("No worker", server.JOBS["job"].error_message)
+
     @patch("server.threading.Thread")
     def test_queue_limit_refuses_when_all_jobs_active(self, thread):
         for i in range(server.MAX_JOBS):

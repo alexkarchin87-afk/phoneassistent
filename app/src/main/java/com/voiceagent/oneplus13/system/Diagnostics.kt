@@ -75,8 +75,7 @@ object Diagnostics {
         return DiagnosticCheck(
             "Спец. возможности (Accessibility)",
             if (enabled) CheckStatus.OK else CheckStatus.FAIL,
-            if (enabled) "Включено" else "Без этого агент не сможет читать экран, нажимать кнопки и листать — " +
-                "команды вроде «что на экране» и «открой Х» работать не будут",
+            if (enabled) "Включено" else "Нужно для нажатий и свайпов. Если доступ заблокирован, открой сведения о приложении → ⋮ → «Разрешить ограниченные настройки».",
             fixSettingsAction = if (enabled) null else Settings.ACTION_ACCESSIBILITY_SETTINGS
         )
     }
@@ -122,8 +121,7 @@ object Diagnostics {
         return DiagnosticCheck(
             "Ключ DeepSeek API",
             if (present) CheckStatus.OK else CheckStatus.FAIL,
-            if (present) "Задан" else "Без него агент не сможет ни понять команду, ни ответить — впиши ключ в " +
-                "local.properties перед сборкой или в Настройках → «Ключи»",
+            if (present) "Задан" else "Нужен для ответов ИИ. Введи ключ в разделе «Ключи ассистента». Время и дата доступны без него.",
             fixSettingsAction = null // это не системная настройка — чинится в самом приложении
         )
     }
@@ -160,6 +158,7 @@ object Diagnostics {
             else
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
-        return enabledServices.split(":").any { it.equals(flatComponentName, ignoreCase = true) }
+        val expected = ComponentName.unflattenFromString(flatComponentName) ?: return false
+        return enabledServices.split(":").any { ComponentName.unflattenFromString(it) == expected }
     }
 }

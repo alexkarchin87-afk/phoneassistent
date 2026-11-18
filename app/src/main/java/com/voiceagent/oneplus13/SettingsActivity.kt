@@ -5,6 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -69,6 +72,7 @@ import com.voiceagent.oneplus13.core.UserMemory
 import com.voiceagent.oneplus13.core.security.SecretsStore
 import com.voiceagent.oneplus13.system.CheckStatus
 import com.voiceagent.oneplus13.system.Diagnostics
+import com.voiceagent.oneplus13.system.RootActions
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
 import com.voiceagent.oneplus13.integrations.bot.TelegramBotService
@@ -162,8 +166,11 @@ fun SettingsScreen(
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             SettingsColumn {
-                SettingsGroup(title = "Диагностика", description = "Почти все проблемы первого запуска — это разрешение или модель Vosk. Здесь видно, что именно не готово.") {
+                SettingsGroup(title = "Диагностика", description = "Здесь видно состояние основных доступов и модели речи.") {
                     DiagnosticsSection()
+                }
+                SettingsGroup(title = "Root-доступ", description = "Проверка запрашивает root в Magisk или KernelSU и проверяет только его наличие. Другие разрешения Android включаются отдельно.") {
+                    RootAccessSection()
                 }
 
                     SettingsGroup(title = "Ключи ассистента", description = "Для ответов ИИ нужен ключ DeepSeek API. После сохранения перезапусти агента.") {
@@ -383,7 +390,16 @@ private fun DiagnosticsSection() {
                 subtitle = check.detail,
                 extra = if (action != null) ({
                     OutlinedButton(
-                        onClick = { context.startActivity(Intent(action)) },
+                        onClick = {
+                            val intent = Intent(action).apply {
+                                if (action == Settings.ACTION_APPLICATION_DETAILS_SETTINGS || action == Settings.ACTION_MANAGE_OVERLAY_PERMISSION) {
+                                    data = Uri.fromParts("package", context.packageName, null)
+                                }
+                            }
+                            runCatching { context.startActivity(intent) }.onFailure {
+                                Toast.makeText(context, "Не удалось открыть системные настройки.", Toast.LENGTH_LONG).show()
+                            }
+                        },
                         shape = RoundedCornerShape(50),
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = if (check.status == CheckStatus.FAIL) cs.error else cs.onSurface
@@ -406,6 +422,31 @@ private fun DiagnosticsSection() {
             trailing = { ChevronTrailing() }
         )
     }
+}
+
+@Composable
+private fun RootAccessSection() {
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("Нажми для проверки. При запросе разреши доступ в Magisk.") }
+    SettingsRow(
+        icon = VaIcons.Key,
+        title = if (checking) "Проверяем root…" else "Проверить root-доступ",
+        subtitle = status,
+        onClick = {
+            if (!checking) scope.launch {
+                checking = true
+                try {
+                    status = when (val result = withContext(Dispatchers.IO) { RootActions.checkAccess() }) {
+                        is RootActions.Result.Success -> "Root-доступ подтверждён для этой установки VoiceAgent."
+                        is RootActions.Result.NoRoot -> "su не найден. Проверь Magisk и включён ли root."
+                        is RootActions.Result.Error -> result.message
+                    }
+                } finally { checking = false }
+            }
+        },
+        trailing = { ChevronTrailing() }
+    )
 }
 
 /** Факты, которые агент запомнил из разговоров («запомни, что я Лёша и мне 13») —

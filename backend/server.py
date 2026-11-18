@@ -69,15 +69,12 @@ def require_auth(authorization: str = Header(default="")):
 
 
 def run_job_stub(job_id: str):
-    """Replace this with your real executor. Kept synchronous + backgrounded via thread
-    for simplicity; swap for a proper task queue (RQ/Celery) for production use."""
+    """Fail honestly until an actual rendering/worker implementation is connected."""
     with JOBS_LOCK:
         job = JOBS[job_id]
-        job.status = Job3DStatus.RUNNING
-    time.sleep(5)  # simulate work
-    with JOBS_LOCK:
-        job.status = Job3DStatus.DONE
-        job.result_url = f"https://your-vps.example.com/results/{job_id}.png"
+        job.status = Job3DStatus.FAILED
+        job.result_url = None
+        job.error_message = "No worker is configured for this job."
 
 
 @app.post("/jobs", response_model=Job3D)

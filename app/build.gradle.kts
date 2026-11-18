@@ -32,7 +32,7 @@ android {
     buildTypes {
         create("recovery") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".recovery"
+            applicationIdSuffix = ".accesscheck"
             matchingFallbacks += listOf("debug")
         }
         release {

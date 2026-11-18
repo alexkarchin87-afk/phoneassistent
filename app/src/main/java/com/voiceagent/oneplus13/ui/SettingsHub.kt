@@ -126,7 +126,18 @@ fun SettingsHubScreen(
                     }
                 }
 
-                SettingsGroup(title = "Разрешения") {
+                SettingsGroup(
+                    title = "Доступ к устройству",
+                    description = "Доступы Android включаются отдельно. Если телефон пишет «Ограниченные настройки», открой сведения о приложении, нажми ⋮ → «Разрешить ограниченные настройки», затем вернись в спец. возможности и включи VoiceAgent. Доступ позволяет приложению видеть экран и нажимать элементы."
+                ) {
+                    SettingsRow(
+                        icon = VaIcons.Info,
+                        title = "Сведения о приложении",
+                        subtitle = "Здесь можно разрешить ограниченные настройки и проверить микрофон",
+                        onClick = controls.onOpenSystemAppInfo,
+                        trailing = { ChevronTrailing() }
+                    )
+                    SettingsDivider()
                     SettingsRow(
                         icon = VaIcons.Accessibility,
                         title = "Спец. возможности",
@@ -140,6 +151,14 @@ fun SettingsHubScreen(
                         title = "Доступ к уведомлениям",
                         subtitle = "Для локальной сводки и быстрых ответов с подтверждением",
                         onClick = controls.onOpenNotificationSettings,
+                        trailing = { ChevronTrailing() }
+                    )
+                    SettingsDivider()
+                    SettingsRow(
+                        icon = VaIcons.Download,
+                        title = "Установка APK",
+                        subtitle = "Для открытия системного установщика; установку подтверждаешь сам",
+                        onClick = controls.onOpenInstallSettings,
                         trailing = { ChevronTrailing() }
                     )
                     SettingsDivider()

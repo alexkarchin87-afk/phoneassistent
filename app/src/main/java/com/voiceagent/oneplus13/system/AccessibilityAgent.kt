@@ -5,6 +5,10 @@ import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 /**
  * Reads screen content and performs taps/swipes/text-entry on behalf of the agent.
@@ -19,7 +23,7 @@ class AccessibilityAgent : AccessibilityService() {
 
     companion object {
         // Set by onServiceConnected(); SystemController posts commands into this instance.
-        var instance: AccessibilityAgent? = null
+        @Volatile var instance: AccessibilityAgent? = null
         private const val MAX_ANCESTOR_SEARCH_DEPTH = 8
     }
 
@@ -64,8 +68,10 @@ class AccessibilityAgent : AccessibilityService() {
     /** Taps the first node whose visible text OR content description contains
      *  [label] (case-insensitive) — see [dumpVisibleText] for why both matter. */
     fun tapByText(label: String): Boolean {
+        val cleanLabel = label.trim()
+        if (cleanLabel.isEmpty()) return false
         val root = rootInActiveWindow ?: return false
-        val target = findNodeByText(root, label) ?: return false
+        val target = findNodeByText(root, cleanLabel) ?: return false
         // Many icon-only controls put the contentDescription on a plain, non-clickable
         // ImageView/TextView, while the actual click target is a parent container
         // (Row/Button). Clicking the leaf we matched on would silently no-op.
@@ -97,13 +103,25 @@ class AccessibilityAgent : AccessibilityService() {
         return null
     }
 
-    /** Performs a straight-line swipe gesture, e.g. for scrolling a feed. */
-    fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long = 300) {
+    /** Returns true only when Android reports that the gesture completed. */
+    suspend fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long = 300): Boolean {
         val path = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
-        dispatchGesture(gesture, null, null)
+        return withTimeoutOrNull(durationMs + 3_000L) {
+            suspendCancellableCoroutine { continuation ->
+                val finished = AtomicBoolean(false)
+                fun finish(value: Boolean) {
+                    if (finished.compareAndSet(false, true) && continuation.isActive) continuation.resume(value)
+                }
+                val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) { finish(true) }
+                    override fun onCancelled(gestureDescription: GestureDescription?) { finish(false) }
+                }, null)
+                if (!accepted) finish(false)
+                continuation.invokeOnCancellation { finished.set(true) }
+            }
+        } ?: false
     }
 }
-

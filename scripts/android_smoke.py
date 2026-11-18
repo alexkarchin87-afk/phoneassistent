@@ -58,9 +58,34 @@ while time.time() < end:
 else:
     raise AssertionError('Voice startup did not finish: '+marker+'\n'+adb('logcat', '-b', 'crash', '-d', '-v', 'brief'))
 time.sleep(5)
+
+# Exercise real binder -> orchestrator -> offline command -> chat, with no API key.
+for _ in range(4):
+    prompt = find('Который час?')
+    if prompt is not None: break
+    adb('shell', 'input', 'swipe', '500', '1400', '500', '500', '350')
+    time.sleep(1)
+else:
+    raise AssertionError('Offline quick command not found')
+tap(prompt)
+wait_for('Сейчас', 45)
+# An ordinary message without a key must return an actionable error.
+edit = next((e for e in tree().iter('node') if e.get('class') == 'android.widget.EditText'), None)
+if edit is None: raise AssertionError('Chat input not found')
+tap(edit)
+adb('shell', 'input', 'text', 'hello')
+tap(wait_for('Отправить', 30))
+wait_for('Добавь ключ DeepSeek API', 60)
+adb('shell', 'input', 'keyevent', '4')
+
 crashes = adb('logcat', '-b', 'crash', '-d', '-v', 'brief')
 if PACKAGE in crashes:
     raise AssertionError('App crashed after enabling agent: '+crashes)
+
+# Grant accessibility only on the disposable emulator, then verify diagnostics.
+component = PACKAGE + '/com.voiceagent.oneplus13.system.AccessibilityAgent'
+adb('shell', 'settings', 'put', 'secure', 'enabled_accessibility_services', component)
+adb('shell', 'settings', 'put', 'secure', 'accessibility_enabled', '1')
 
 # Simulate a restart without clearing data, then confirm data and UI remain.
 adb('shell', 'run-as', PACKAGE, 'touch', 'files/smoke_data_kept')
@@ -79,10 +104,25 @@ else:
     raise AssertionError('Settings entry not found: '+ET.tostring(tree(), encoding='unicode'))
 tap(node)
 wait_for('Ключи и диагностика')
+wait_for('Спец. возможности')
+wait_for('Включено')
+# Root probe is explicit; the emulator should return a result instead of hanging.
+for _ in range(8):
+    root_check = find('Проверить root-доступ')
+    if root_check is not None: break
+    adb('shell', 'input', 'swipe', '500', '1500', '500', '600', '350')
+    time.sleep(1)
+else: raise AssertionError('Root check not found')
+tap(root_check)
+end = time.time() + 45
+while time.time() < end:
+    if any(find(label) is not None for label in ('Root-доступ подтверждён', 'su не найден', 'Команда не выполнена', 'не получила права root', 'Система запретила запуск su', 'Root-запрос не получил ответа')): break
+    time.sleep(1)
+else: raise AssertionError('Root check did not finish')
 for _ in range(8):
     if find('DeepSeek API key') is not None: break
     adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
     time.sleep(1)
 else:
     raise AssertionError('API key field is not accessible: '+ET.tostring(tree(), encoding='unicode'))
-print('Voice service started and app reopened without clearing data; API settings are accessible.')
+print('Voice service, offline reply, missing-key error, accessibility diagnostics and data-preserving restart passed.')

@@ -82,6 +82,8 @@ data class AgentControls(
     val onOpenNotificationSettings: () -> Unit,
     val onOpenBatterySettings: () -> Unit,
     val onOpenAppSettings: () -> Unit,
+    val onOpenSystemAppInfo: () -> Unit,
+    val onOpenInstallSettings: () -> Unit,
     // Системный оверлей-пузырь (виден поверх ЛЮБОГО приложения) — см. overlay/OverlayBubbleController.kt.
     val canDrawOverlays: () -> Boolean,
     val onRequestOverlayPermission: () -> Unit,

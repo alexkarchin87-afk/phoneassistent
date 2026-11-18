@@ -448,7 +448,12 @@ class AgentOrchestrator(
                 AgentEventBus.publish(AgentEvent.Reply(message))
                 tts.speak(message)
             }
-            "swipe_up" -> systemController.swipeUp()
+            "swipe_up" -> {
+                val message = if (systemController.swipeUp()) "Пролистал вверх."
+                    else "Не удалось пролистать. Проверь специальный доступ и активный экран."
+                AgentEventBus.publish(AgentEvent.Reply(message))
+                tts.speak(message)
+            }
             "lecture_start" -> tts.speak(
                 if (lectureCommands.start(params["title"] ?: "Лекция")) "Начал запись лекции."
                 else "Лекция уже записывается."
@@ -651,6 +656,7 @@ class AgentOrchestrator(
             is com.voiceagent.oneplus13.system.RootActions.Result.Error ->
                 "Не получилось: ${result.message}"
         }
+        AgentEventBus.publish(AgentEvent.Reply(message))
         tts.speak(message)
     }
 
@@ -658,12 +664,15 @@ class AgentOrchestrator(
      *  root-обхода экрана подтверждения установки. */
     private suspend fun handleInstallApp(params: Map<String, String>) {
         val target = params["query"] ?: return
-        when (val outcome = systemController.installApp(target)) {
-            is SystemController.InstallOutcome.OpenedPlayStore -> tts.speak("Открыл Play Маркет — там нажми «Установить».")
-            is SystemController.InstallOutcome.OpenedUrl -> tts.speak("Открыл ссылку в браузере.")
-            is SystemController.InstallOutcome.PromptedInstall -> tts.speak("Скачал — подтверди установку на экране.")
-            is SystemController.InstallOutcome.Failed -> tts.speak("Не получилось скачать: ${outcome.reason}")
+        val message = when (val outcome = systemController.installApp(target)) {
+            is SystemController.InstallOutcome.OpenedPlayStore -> "Открыл Play Маркет — там нажми «Установить»."
+            is SystemController.InstallOutcome.OpenedUrl -> "Открыл ссылку в браузере."
+            is SystemController.InstallOutcome.PromptedInstall -> "Скачал — подтверди установку на экране."
+            is SystemController.InstallOutcome.NeedsInstallPermission -> "Разреши установку APK в настройках Вани, затем повтори запрос."
+            is SystemController.InstallOutcome.Failed -> outcome.reason
         }
+        AgentEventBus.publish(AgentEvent.Reply(message))
+        tts.speak(message)
     }
 
     /** "Собери конспект по..." — из присланных источников (текст лекции, слайды,

@@ -70,7 +70,7 @@ class WorkflowRunner internal constructor(
             systemController.setMediaVolume(it); true
         } ?: false
         BlockType.TAP_TEXT -> block.params["label"]?.let { systemController.tapByText(it) } ?: false
-        BlockType.SWIPE_UP -> { systemController.swipeUp(); true }
+        BlockType.SWIPE_UP -> systemController.swipeUp()
         BlockType.SPEAK -> block.params["text"]?.let { tts.speak(it); true } ?: false
         BlockType.DELAY -> {
             val seconds = block.params["seconds"]?.toLongOrNull() ?: 1L

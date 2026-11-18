@@ -124,22 +124,34 @@ class MainActivity : ComponentActivity() {
                                     else activeBinder.sendText(text)
                                 },
                                 onOpenAccessibilitySettings = {
-                                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                    openSystemSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                                 },
                                 onOpenNotificationSettings = {
-                                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                    openSystemSettings(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                                 },
                                 onOpenBatterySettings = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                        openSystemSettings(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                                     }
                                 },
                                 onOpenAppSettings = {
                                     startActivity(Intent(this, SettingsActivity::class.java))
                                 },
+                                onOpenSystemAppInfo = {
+                                    openSystemSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", packageName, null)))
+                                },
+                                onOpenInstallSettings = {
+                                    runCatching {
+                                        startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                            Uri.fromParts("package", packageName, null)))
+                                    }.onFailure {
+                                        Toast.makeText(this, "Не удалось открыть настройки установки APK.", Toast.LENGTH_LONG).show()
+                                    }
+                                },
                                 canDrawOverlays = { OverlayBubbleController.canDrawOverlays(this) },
                                 onRequestOverlayPermission = {
-                                    startActivity(OverlayBubbleController.overlayPermissionIntent(this))
+                                    openSystemSettings(OverlayBubbleController.overlayPermissionIntent(this))
                                 },
                                 isOverlayEnabled = {
                                     UiPreferences(this).overlayEnabled
@@ -167,6 +179,12 @@ class MainActivity : ComponentActivity() {
                         )
                 }
             }
+        }
+    }
+
+    private fun openSystemSettings(intent: Intent) {
+        runCatching { startActivity(intent) }.onFailure {
+            Toast.makeText(this, "Не удалось открыть системные настройки.", Toast.LENGTH_LONG).show()
         }
     }
 
