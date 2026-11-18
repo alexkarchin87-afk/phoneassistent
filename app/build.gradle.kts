@@ -77,7 +77,12 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    implementation(libs.vosk.android)
+    implementation(libs.vosk.android) {
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    // Vosk's published POM resolves the desktop JNA jar by default; Android
+    // requires the AAR so libjnidispatch.so is bundled for each device ABI.
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 

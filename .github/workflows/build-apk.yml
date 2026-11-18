@@ -60,6 +60,9 @@ jobs:
         run: |
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/uuid'
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/am/final.mdl'
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F "lib/$abi/libjnidispatch.so"
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -70,6 +73,12 @@ jobs:
 
       - name: Build separate recovery APK
         run: gradle assembleRecovery --stacktrace
+
+      - name: Verify recovery native libraries
+        run: |
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            unzip -l app/build/outputs/apk/recovery/app-recovery.apk | grep -F "lib/$abi/libjnidispatch.so"
+          done
 
       - name: Upload separate recovery APK
         uses: actions/upload-artifact@v4

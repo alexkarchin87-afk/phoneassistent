@@ -25,6 +25,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.flowOn
 import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
@@ -113,21 +114,31 @@ class VoiceAgentService : Service() {
             return
         }
 
-        startupGuard.setStage("Загрузка модели речи")
-        try {
-            stt.ensureModel(
-                onReady = { if (job.isActive) startListeningLoop() else stt.releaseModel() },
-                onError = { error ->
-                    startupGuard.clear()
-                    scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось загрузить модель распознавания речи.", error)) }
+        startupGuard.setStage("Проверка библиотек речи")
+        scope.launch(Dispatchers.IO) {
+            try {
+                // StorageService creates Model on an unmanaged executor. Resolve native
+                // libraries here first so linkage errors cannot crash that thread.
+                Class.forName("org.vosk.LibVosk")
+                startupGuard.setStage("Загрузка модели речи")
+                withContext(Dispatchers.Main) {
+                    stt.ensureModel(
+                        onReady = { if (job.isActive) startListeningLoop() else stt.releaseModel() },
+                        onError = { error ->
+                            startupGuard.clear()
+                            scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось загрузить модель распознавания речи.", error)) }
+                        }
+                    )
                 }
-            )
-        } catch (error: Exception) {
-            startupGuard.clear()
-            scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось запустить распознавание речи.", error)) }
-        } catch (error: LinkageError) {
-            startupGuard.clear()
-            scope.launch { AgentEventBus.publish(AgentEvent.Error("Модуль распознавания речи не запустился на этом устройстве.", error)) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: LinkageError) {
+                startupGuard.clear()
+                AgentEventBus.publish(AgentEvent.Error("Модуль распознавания речи не запустился на этом устройстве.", error))
+            } catch (error: Exception) {
+                startupGuard.clear()
+                AgentEventBus.publish(AgentEvent.Error("Не удалось запустить распознавание речи.", error))
+            }
         }
 
         // Если пользователь раньше включил оверлей и разрешение уже выдано —
