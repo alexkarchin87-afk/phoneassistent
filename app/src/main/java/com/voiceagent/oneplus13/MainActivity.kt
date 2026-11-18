@@ -19,6 +19,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.getValue
@@ -96,10 +99,19 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            var interrupted by androidx.compose.runtime.remember { mutableStateOf((application as VoiceAgentApp).takeInterruptedStartup()) }
             val windowSizeClass = calculateWindowSizeClass(this)
 
             VoiceAgentTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
+                    if (interrupted != null) {
+                        AlertDialog(
+                            onDismissRequest = { interrupted = null },
+                            title = { Text("Предыдущий запуск прервался") },
+                            text = { Text("Этап: ${interrupted.orEmpty()}. Настройки и ключи сохранены. Открой настройки и отправь лог последнего сбоя разработчику, если он доступен.") },
+                            confirmButton = { TextButton(onClick = { interrupted = null }) { Text("Понятно") } }
+                        )
+                    }
                     MainScreen(
                             windowSizeClass = windowSizeClass,
                             controls = AgentControls(

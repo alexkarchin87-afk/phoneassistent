@@ -38,7 +38,7 @@ class STTEngine(private val context: Context) {
     }
 
     /** Continuous partial+final recognition as a cold Flow; cancel the collector to stop listening. */
-    fun listen(acceptTranscript: () -> Boolean = { true }): Flow<String> = callbackFlow {
+    fun listen(onStarted: () -> Unit = {}, acceptTranscript: () -> Boolean = { true }): Flow<String> = callbackFlow {
         val currentModel = synchronized(modelLock) { model }
             ?: throw IllegalStateException("Call ensureModel() first")
         val recognizer = Recognizer(currentModel, 16000.0f)
@@ -79,6 +79,7 @@ class STTEngine(private val context: Context) {
             override fun onTimeout() { /* no-op: keep listening */ }
         })
         if (!acceptTranscript()) service.setPause(true)
+        onStarted()
 
         awaitClose {
             service.cancel()

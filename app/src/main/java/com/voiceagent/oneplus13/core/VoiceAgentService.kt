@@ -17,6 +17,8 @@ import com.voiceagent.oneplus13.overlay.OverlayBubbleController
 import com.voiceagent.oneplus13.ui.UiPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -56,20 +58,47 @@ class VoiceAgentService : Service() {
     @Volatile private var conversationActiveUntil = 0L
     private val commandBusy = AtomicBoolean(false)
     @Volatile private var initFailed = false
+    private var initialized = false
+    private lateinit var startupGuard: StartupGuard
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_listening)))
+        startupGuard = StartupGuard(applicationContext)
+        uiPrefs = UiPreferences(applicationContext)
+        try {
+            startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_listening)))
+        } catch (error: Exception) {
+            initFailed = true
+            android.util.Log.e("VoiceAgentService", "Foreground start failed", error)
+            stopSelf()
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A system restart without a user request must not restart a crashing pipeline.
+        if (intent == null || initFailed) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (!initialized) {
+            initialized = true
+            initializeAgent()
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun initializeAgent() {
+        startupGuard.begin()
         try {
             stt = STTEngine(applicationContext)
             tts = TTSEngine(applicationContext) { active -> stt.setSpeechOutputActive(active) }
-            uiPrefs = UiPreferences(applicationContext)
             orchestrator = scope.async(Dispatchers.IO) {
                 try {
                     AgentOrchestrator(applicationContext, LLMClient(applicationContext), tts, scope)
                         .also { orchestratorInstance = it }
                 } catch (error: Exception) {
                     initFailed = true
+                    startupGuard.clear()
                     android.util.Log.e("VoiceAgentService", "Orchestrator initialization failed", error)
                     AgentEventBus.publish(AgentEvent.Error("Не удалось подготовить агента. Перезапусти приложение и проверь настройки.", error))
                     stopSelf()
@@ -78,20 +107,36 @@ class VoiceAgentService : Service() {
             }
         } catch (error: Exception) {
             initFailed = true
+            startupGuard.clear()
             android.util.Log.e("VoiceAgentService", "Initialization failed", error)
             stopSelf()
             return
         }
 
-        stt.ensureModel(
-            onReady = { if (job.isActive) startListeningLoop() else stt.releaseModel() },
-            onError = { scope.launch { AgentEventBus.publish(AgentEvent.Error("Модель STT не загрузилась", it)) } }
-        )
+        startupGuard.setStage("Загрузка модели речи")
+        try {
+            stt.ensureModel(
+                onReady = { if (job.isActive) startListeningLoop() else stt.releaseModel() },
+                onError = { error ->
+                    startupGuard.clear()
+                    scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось загрузить модель распознавания речи.", error)) }
+                }
+            )
+        } catch (error: Exception) {
+            startupGuard.clear()
+            scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось запустить распознавание речи.", error)) }
+        } catch (error: LinkageError) {
+            startupGuard.clear()
+            scope.launch { AgentEventBus.publish(AgentEvent.Error("Модуль распознавания речи не запустился на этом устройстве.", error)) }
+        }
 
         // Если пользователь раньше включил оверлей и разрешение уже выдано —
         // поднимаем пузырь сразу вместе с сервисом, без повторного тапа в UI.
         if (uiPrefs.overlayEnabled && OverlayBubbleController.canDrawOverlays(applicationContext)) {
-            startOverlay()
+            try { startOverlay() } catch (error: Exception) {
+                uiPrefs.overlayEnabled = false
+                scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось открыть плавающий пузырь. Он временно отключён.", error)) }
+            }
         }
 
         // Готовый проект — отдельное (не "вечное") уведомление с кнопками
@@ -106,7 +151,14 @@ class VoiceAgentService : Service() {
 
     private fun startListeningLoop() {
         scope.launch {
-            stt.listen { tts.acceptsMicrophoneInput() }.flowOn(Dispatchers.IO).collect { transcript ->
+            startupGuard.setStage("Запуск микрофона и распознавания")
+            stt.listen(onStarted = { startupGuard.clear() }) { tts.acceptsMicrophoneInput() }
+                .flowOn(Dispatchers.IO)
+                .catch { error ->
+                    if (error is CancellationException) throw error
+                    startupGuard.clear()
+                    AgentEventBus.publish(AgentEvent.Error("Не удалось включить распознавание речи. Проверь разрешение на микрофон.", error))
+                }.collect { transcript ->
                 if (!tts.acceptsMicrophoneInput()) return@collect
                 val agent = orchestrator.await()
                 val gotWakeWord = containsWakeWord(transcript)
@@ -151,16 +203,18 @@ class VoiceAgentService : Service() {
 
     private fun stripWakeWord(text: String): String = WakeWord.strip(text)
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-        if (initFailed) START_NOT_STICKY else START_STICKY
-
     /** Включает/выключает системный оверлей-пузырь и запоминает выбор. Ничего
      *  не делает, если разрешение "поверх других приложений" ещё не выдано —
      *  UI должен сначала направить пользователя в системные настройки. */
     fun setOverlayEnabled(enabled: Boolean) {
         uiPrefs.overlayEnabled = enabled
         if (enabled) {
-            if (OverlayBubbleController.canDrawOverlays(applicationContext)) startOverlay()
+            if (OverlayBubbleController.canDrawOverlays(applicationContext)) {
+                try { startOverlay() } catch (error: Exception) {
+                    uiPrefs.overlayEnabled = false
+                    scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось открыть плавающий пузырь. Он отключён.", error)) }
+                }
+            }
         } else {
             stopOverlay()
         }
@@ -221,7 +275,10 @@ class VoiceAgentService : Service() {
         stopOverlay()
         orchestratorInstance?.onServiceStopping()
         job.cancel()
-        job.invokeOnCompletion { if (::stt.isInitialized) stt.releaseModel() }
+        job.invokeOnCompletion {
+            if (::stt.isInitialized) stt.releaseModel()
+            startupGuard.clear()
+        }
         if (::tts.isInitialized) tts.shutdown()
         super.onDestroy()
     }

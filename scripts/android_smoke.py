@@ -32,7 +32,40 @@ def wait_for(label, timeout=30):
     raise AssertionError('Missing UI element: '+label+'\n'+ET.tostring(tree(), encoding='unicode'))
 
 adb('install', '-r', sys.argv[1])
+adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.RECORD_AUDIO')
+adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS')
+adb('logcat', '-b', 'crash', '-c')
 adb('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
+
+# Start the real foreground service, Vosk model and microphone on the emulator.
+tap(wait_for('Запустить агента', 60))
+wait_for('Остановить агента', 60)
+end = time.time() + 120
+seen_marker = False
+while time.time() < end:
+    if not adb('shell', 'pidof', PACKAGE).strip():
+        raise AssertionError('App died during startup: '+adb('logcat', '-b', 'crash', '-d', '-v', 'brief'))
+    try:
+        marker = adb('shell', 'run-as', PACKAGE, 'cat', 'shared_prefs/voice_agent_startup.xml')
+        seen_marker = True
+    except subprocess.CalledProcessError:
+        marker = ''
+    if seen_marker and 'pending_stage' not in marker:
+        break
+    time.sleep(3)
+else:
+    raise AssertionError('Voice startup did not finish: '+marker+'\n'+adb('logcat', '-b', 'crash', '-d', '-v', 'brief'))
+time.sleep(5)
+crashes = adb('logcat', '-b', 'crash', '-d', '-v', 'brief')
+if PACKAGE in crashes:
+    raise AssertionError('App crashed after enabling agent: '+crashes)
+
+# Simulate a restart without clearing data, then confirm data and UI remain.
+adb('shell', 'run-as', PACKAGE, 'touch', 'files/smoke_data_kept')
+adb('shell', 'am', 'force-stop', PACKAGE)
+adb('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
+wait_for('Запустить агента', 60)
+adb('shell', 'run-as', PACKAGE, 'ls', 'files/smoke_data_kept')
 tap(wait_for('Настройки', 60))
 wait_for('Голосовой агент')
 for _ in range(12):
@@ -50,4 +83,4 @@ for _ in range(8):
     time.sleep(1)
 else:
     raise AssertionError('API key field is not accessible: '+ET.tostring(tree(), encoding='unicode'))
-print('Main screen and API settings opened without registration.')
+print('Voice service started and app reopened without clearing data; API settings are accessible.')
