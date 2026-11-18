@@ -94,7 +94,7 @@ class MainActivity : ComponentActivity() {
 
         // Если сервис уже был запущен раньше (например, после перезапуска
         // Activity), просто привязываемся к нему без повторного старта.
-        if (isServiceRunning()) {
+        if (VoiceAgentService.startedInThisProcess) {
             bindToService()
         }
 
@@ -217,13 +217,6 @@ class MainActivity : ComponentActivity() {
             serviceBound = bindService(Intent(this, VoiceAgentService::class.java), connection, Context.BIND_AUTO_CREATE)
             if (!serviceBound) Toast.makeText(this, "Не удалось подключиться к сервису.", Toast.LENGTH_LONG).show()
         }
-    }
-
-    private fun isServiceRunning(): Boolean {
-        val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
-        @Suppress("DEPRECATION")
-        return manager.getRunningServices(Int.MAX_VALUE)
-            .any { it.service.className == VoiceAgentService::class.java.name }
     }
 
     override fun onDestroy() {

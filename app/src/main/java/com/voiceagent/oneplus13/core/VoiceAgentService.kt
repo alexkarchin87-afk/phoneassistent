@@ -84,6 +84,7 @@ class VoiceAgentService : Service() {
         if (!initialized) {
             initialized = true
             initializeAgent()
+            startedInThisProcess = !initFailed
         }
         return START_NOT_STICKY
     }
@@ -99,6 +100,7 @@ class VoiceAgentService : Service() {
                         .also { orchestratorInstance = it }
                 } catch (error: Exception) {
                     initFailed = true
+                    startedInThisProcess = false
                     startupGuard.clear()
                     android.util.Log.e("VoiceAgentService", "Orchestrator initialization failed", error)
                     AgentEventBus.publish(AgentEvent.Error("Не удалось подготовить агента. Перезапусти приложение и проверь настройки.", error))
@@ -283,6 +285,7 @@ class VoiceAgentService : Service() {
     override fun onBind(intent: Intent?): IBinder? = if (initFailed) null else binder
 
     override fun onDestroy() {
+        startedInThisProcess = false
         stopOverlay()
         orchestratorInstance?.onServiceStopping()
         job.cancel()
@@ -342,6 +345,10 @@ class VoiceAgentService : Service() {
     }
 
     companion object {
+        // Activity and service share a process. A fresh process must not re-bind a
+        // stale Android service record with BIND_AUTO_CREATE and resurrect it.
+        @Volatile var startedInThisProcess: Boolean = false
+            private set
         private const val NOTIF_ID = 1001
         private const val CONVERSATION_WINDOW_MS = 20_000L
     }
