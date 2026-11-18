@@ -85,16 +85,16 @@ if PACKAGE in crashes:
 # Simulate a restart without clearing data, then confirm data and UI remain.
 adb('shell', 'run-as', PACKAGE, 'touch', 'files/smoke_data_kept')
 adb('shell', 'am', 'force-stop', PACKAGE)
-# Grant accessibility on the disposable emulator *after* force-stop, which can
-# revoke the stopped app's accessibility setting on some Android images.
+adb('shell', 'am', 'start', '-W', '-n', ACTIVITY)
+wait_for('Запустить агента', 60)
+adb('shell', 'run-as', PACKAGE, 'ls', 'files/smoke_data_kept')
+# Grant accessibility on the disposable emulator only after the force-stopped
+# app is running again, so Android does not prune a stopped service.
 component = PACKAGE + '/com.voiceagent.oneplus13.system.AccessibilityAgent'
 adb('shell', 'settings', 'put', 'secure', 'enabled_accessibility_services', component)
 adb('shell', 'settings', 'put', 'secure', 'accessibility_enabled', '1')
 value = adb('shell', 'settings', 'get', 'secure', 'enabled_accessibility_services').strip()
 if component not in value: raise AssertionError('Accessibility setting not retained: '+value)
-adb('shell', 'am', 'start', '-W', '-n', ACTIVITY)
-wait_for('Запустить агента', 60)
-adb('shell', 'run-as', PACKAGE, 'ls', 'files/smoke_data_kept')
 tap(wait_for('Настройки', 60))
 wait_for('Голосовой агент')
 for _ in range(12):
@@ -119,11 +119,16 @@ for _ in range(8):
     time.sleep(1)
 else: raise AssertionError('Root check not found')
 tap(root_check)
-end = time.time() + 45
+adb('shell', 'input', 'swipe', '500', '1450', '500', '900', '300')
+end = time.time() + 55
+labels = ('Root-доступ подтверждён', 'su не найден', 'Команда не выполнена',
+          'не получила права root', 'Система запретила запуск su',
+          'Root-запрос не получил ответа', 'Проверка root прервана')
 while time.time() < end:
-    if any(find(label) is not None for label in ('Root-доступ подтверждён', 'su не найден', 'Команда не выполнена', 'не получила права root', 'Система запретила запуск su', 'Root-запрос не получил ответа')): break
+    snapshot = ET.tostring(tree(), encoding='unicode')
+    if any(label in snapshot for label in labels): break
     time.sleep(1)
-else: raise AssertionError('Root check did not finish')
+else: raise AssertionError('Root check did not finish or its result is off-screen: '+snapshot)
 for _ in range(8):
     if find('DeepSeek API key') is not None: break
     adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
