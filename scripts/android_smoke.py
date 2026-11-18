@@ -82,14 +82,16 @@ crashes = adb('logcat', '-b', 'crash', '-d', '-v', 'brief')
 if PACKAGE in crashes:
     raise AssertionError('App crashed after enabling agent: '+crashes)
 
-# Grant accessibility only on the disposable emulator, then verify diagnostics.
-component = PACKAGE + '/com.voiceagent.oneplus13.system.AccessibilityAgent'
-adb('shell', 'settings', 'put', 'secure', 'enabled_accessibility_services', component)
-adb('shell', 'settings', 'put', 'secure', 'accessibility_enabled', '1')
-
 # Simulate a restart without clearing data, then confirm data and UI remain.
 adb('shell', 'run-as', PACKAGE, 'touch', 'files/smoke_data_kept')
 adb('shell', 'am', 'force-stop', PACKAGE)
+# Grant accessibility on the disposable emulator *after* force-stop, which can
+# revoke the stopped app's accessibility setting on some Android images.
+component = PACKAGE + '/com.voiceagent.oneplus13.system.AccessibilityAgent'
+adb('shell', 'settings', 'put', 'secure', 'enabled_accessibility_services', component)
+adb('shell', 'settings', 'put', 'secure', 'accessibility_enabled', '1')
+value = adb('shell', 'settings', 'get', 'secure', 'enabled_accessibility_services').strip()
+if component not in value: raise AssertionError('Accessibility setting not retained: '+value)
 adb('shell', 'am', 'start', '-W', '-n', ACTIVITY)
 wait_for('Запустить агента', 60)
 adb('shell', 'run-as', PACKAGE, 'ls', 'files/smoke_data_kept')
@@ -105,7 +107,10 @@ else:
 tap(node)
 wait_for('Ключи и диагностика')
 wait_for('Спец. возможности')
-wait_for('Включено')
+try:
+    wait_for('Включено')
+except AssertionError as error:
+    raise AssertionError(str(error)+'\nAccessibility setting: '+adb('shell', 'settings', 'get', 'secure', 'enabled_accessibility_services')) from error
 # Root probe is explicit; the emulator should return a result instead of hanging.
 for _ in range(8):
     root_check = find('Проверить root-доступ')
