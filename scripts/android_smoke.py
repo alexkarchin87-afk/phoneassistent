@@ -1,11 +1,13 @@
 """Basic launch and navigation smoke test; it does not simulate real audio or an API key."""
 import re
+import os
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
 
-PACKAGE = 'com.voiceagent.oneplus13'
+PACKAGE = os.environ.get('VOICEAGENT_PACKAGE', 'com.voiceagent.oneplus13')
+ACTIVITY = PACKAGE + '/com.voiceagent.oneplus13.MainActivity'
 
 def adb(*args):
     return subprocess.check_output(['adb', *args], text=True, stderr=subprocess.STDOUT)
@@ -29,13 +31,13 @@ def wait_for(label, timeout=30):
         node = find(label)
         if node is not None: return node
         time.sleep(1)
-    raise AssertionError('Missing UI element: '+label+'\n'+ET.tostring(tree(), encoding='unicode'))
+    raise AssertionError('Missing UI element: '+label+'\n'+ET.tostring(tree(), encoding='unicode')+'\nCRASH LOG:\n'+adb('logcat', '-b', 'crash', '-d', '-v', 'threadtime'))
 
 adb('install', '-r', sys.argv[1])
 adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.RECORD_AUDIO')
 adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS')
 adb('logcat', '-b', 'crash', '-c')
-adb('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
+adb('shell', 'am', 'start', '-W', '-n', ACTIVITY)
 
 # Start the real foreground service, Vosk model and microphone on the emulator.
 tap(wait_for('Запустить агента', 60))
@@ -63,7 +65,7 @@ if PACKAGE in crashes:
 # Simulate a restart without clearing data, then confirm data and UI remain.
 adb('shell', 'run-as', PACKAGE, 'touch', 'files/smoke_data_kept')
 adb('shell', 'am', 'force-stop', PACKAGE)
-adb('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
+adb('shell', 'am', 'start', '-W', '-n', ACTIVITY)
 wait_for('Запустить агента', 60)
 adb('shell', 'run-as', PACKAGE, 'ls', 'files/smoke_data_kept')
 tap(wait_for('Настройки', 60))

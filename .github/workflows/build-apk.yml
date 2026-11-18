@@ -68,6 +68,16 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+      - name: Build separate recovery APK
+        run: gradle assembleRecovery --stacktrace
+
+      - name: Upload separate recovery APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceagent-recovery-apk
+          path: app/build/outputs/apk/recovery/app-recovery.apk
+          if-no-files-found: error
+
 
   smoke:
     name: Launch on Android emulator
@@ -79,6 +89,10 @@ jobs:
         with:
           name: voiceagent-debug-apk
           path: smoke-apk
+      - uses: actions/download-artifact@v4
+        with:
+          name: voiceagent-recovery-apk
+          path: recovery-apk
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -92,4 +106,7 @@ jobs:
           target: google_apis
           profile: pixel_2
           disable-animations: true
-          script: python3 scripts/android_smoke.py smoke-apk/app-debug.apk
+          script: |
+            python3 scripts/android_smoke.py smoke-apk/app-debug.apk
+            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.recovery python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
+            adb shell run-as com.voiceagent.oneplus13 ls files/smoke_data_kept

@@ -30,6 +30,11 @@ android {
     }
 
     buildTypes {
+        create("recovery") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".recovery"
+            matchingFallbacks += listOf("debug")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

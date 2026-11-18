@@ -2,6 +2,7 @@ package com.voiceagent.oneplus13.system
 
 import android.Manifest
 import android.content.Context
+import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
@@ -70,7 +71,7 @@ object Diagnostics {
     }
 
     private fun checkAccessibilityService(context: Context): DiagnosticCheck {
-        val enabled = isServiceEnabled(context, "com.voiceagent.oneplus13/.system.AccessibilityAgent")
+        val enabled = isServiceEnabled(context, ComponentName(context, AccessibilityAgent::class.java).flattenToShortString())
         return DiagnosticCheck(
             "Спец. возможности (Accessibility)",
             if (enabled) CheckStatus.OK else CheckStatus.FAIL,
@@ -81,7 +82,7 @@ object Diagnostics {
     }
 
     private fun checkNotificationListener(context: Context): DiagnosticCheck {
-        val enabled = isServiceEnabled(context, "com.voiceagent.oneplus13/.system.NotificationReader")
+        val enabled = isServiceEnabled(context, ComponentName(context, NotificationReader::class.java).flattenToShortString())
         return DiagnosticCheck(
             "Доступ к уведомлениям",
             if (enabled) CheckStatus.OK else CheckStatus.WARNING,
