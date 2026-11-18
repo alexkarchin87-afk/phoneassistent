@@ -49,8 +49,11 @@ import com.voiceagent.oneplus13.ui.theme.VoiceAgentTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.getValue
@@ -63,6 +66,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.voiceagent.oneplus13.core.BackupManager
@@ -366,16 +372,30 @@ private fun KeyField(label: String, value: String, reveal: Boolean, onChange: (S
 private fun DiagnosticsSection() {
     val context = LocalContext.current
     val cs = MaterialTheme.colorScheme
-    val scope = rememberCoroutineScope()
     var checks by remember { mutableStateOf<List<com.voiceagent.oneplus13.system.DiagnosticCheck>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        checks = withContext(Dispatchers.IO) { Diagnostics.runAll(context.applicationContext) }
-        loading = false
+    var failure by remember { mutableStateOf<String?>(null) }
+    var refresh by remember { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refresh++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(refresh) {
+        loading = true
+        failure = null
+        try { checks = withContext(Dispatchers.IO) { Diagnostics.runAll(context.applicationContext) } }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { failure = "Не удалось проверить доступы. Попробуй ещё раз." }
+        finally { loading = false }
     }
 
     Column {
         if (loading) SettingsRow(icon = VaIcons.Pulse, title = "Проверяем настройки…")
+        failure?.let { SettingsRow(icon = VaIcons.Alert, title = it) }
         checks.forEachIndexed { index, check ->
             if (index > 0) SettingsDivider()
             val icon: ImageVector = when (check.status) {
@@ -412,13 +432,7 @@ private fun DiagnosticsSection() {
         SettingsRow(
             icon = VaIcons.Pulse,
             title = "Проверить заново",
-            onClick = {
-                if (!loading) scope.launch {
-                    loading = true
-                    try { checks = withContext(Dispatchers.IO) { Diagnostics.runAll(context.applicationContext) } }
-                    finally { loading = false }
-                }
-            },
+            onClick = { if (!loading) refresh++ },
             trailing = { ChevronTrailing() }
         )
     }
