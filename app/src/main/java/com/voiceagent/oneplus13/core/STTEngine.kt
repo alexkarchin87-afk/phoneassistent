@@ -50,7 +50,7 @@ class STTEngine(private val context: Context) {
         }
         speechService = service
 
-        service.startListening(object : RecognitionListener {
+        val started = service.startListening(object : RecognitionListener {
             // If TTS overlapped an utterance, discard its entire final result even
             // if recognition finishes after the output gate has reopened.
             private var contaminated = false
@@ -78,6 +78,12 @@ class STTEngine(private val context: Context) {
 
             override fun onTimeout() { /* no-op: keep listening */ }
         })
+        if (!started) {
+            service.shutdown()
+            recognizer.close()
+            if (speechService === service) speechService = null
+            throw IllegalStateException("Speech recognizer did not start")
+        }
         if (!acceptTranscript()) service.setPause(true)
         onStarted()
 

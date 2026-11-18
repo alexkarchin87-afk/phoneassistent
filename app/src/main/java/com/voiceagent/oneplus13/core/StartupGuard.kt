@@ -6,8 +6,9 @@ import android.content.Context
 class StartupGuard(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences("voice_agent_startup", Context.MODE_PRIVATE)
 
-    fun begin() = setStage("Подготовка сервиса")
+    fun begin() { prefs.edit().putString("pending_stage", "Подготовка сервиса").putBoolean("listener_started", false).commit() }
     fun setStage(stage: String) { prefs.edit().putString("pending_stage", stage).commit() }
+    fun listenerStarted() { prefs.edit().remove("pending_stage").putBoolean("listener_started", true).commit() }
     fun clear() { prefs.edit().remove("pending_stage").commit() }
     fun consumeInterrupted(): String? {
         val stage = prefs.getString("pending_stage", null)

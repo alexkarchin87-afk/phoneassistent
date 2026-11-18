@@ -50,7 +50,7 @@ while time.time() < end:
         seen_marker = True
     except subprocess.CalledProcessError:
         marker = ''
-    if seen_marker and 'pending_stage' not in marker:
+    if seen_marker and re.search(r'<boolean name="listener_started" value="true"', marker):
         break
     time.sleep(3)
 else:

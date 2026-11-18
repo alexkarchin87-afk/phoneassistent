@@ -152,7 +152,7 @@ class VoiceAgentService : Service() {
     private fun startListeningLoop() {
         scope.launch {
             startupGuard.setStage("Запуск микрофона и распознавания")
-            stt.listen(onStarted = { startupGuard.clear() }) { tts.acceptsMicrophoneInput() }
+            stt.listen(onStarted = { startupGuard.listenerStarted() }) { tts.acceptsMicrophoneInput() }
                 .flowOn(Dispatchers.IO)
                 .catch { error ->
                     if (error is CancellationException) throw error
