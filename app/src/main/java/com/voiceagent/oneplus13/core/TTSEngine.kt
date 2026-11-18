@@ -29,15 +29,20 @@ class TTSEngine(
     private lateinit var tts: TextToSpeech
     init {
         tts = TextToSpeech(context.applicationContext) { status ->
-        // Posting also ensures the field assignment has completed if the callback is immediate.
-        Handler(Looper.getMainLooper()).post {
-            if (!closed && status == TextToSpeech.SUCCESS) {
-                tts.language = Locale("ru", "RU")
-                initialized.complete(true)
-            } else {
-                initialized.complete(false)
+            // Post so the field assignment completes before the callback reads it.
+            Handler(Looper.getMainLooper()).post {
+                if (closed || status != TextToSpeech.SUCCESS) {
+                    initialized.complete(false)
+                } else {
+                    try {
+                        tts.language = Locale("ru", "RU")
+                        initialized.complete(true)
+                    } catch (error: RuntimeException) {
+                        android.util.Log.e("TTSEngine", "Text-to-speech initialization failed", error)
+                        initialized.complete(false)
+                    }
+                }
             }
-        }
         }
     }
 
