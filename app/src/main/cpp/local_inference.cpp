@@ -23,7 +23,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeCancel(JNIEnv *, jobjec
 extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeReset(JNIEnv *, jobject) { cancelled = false; }
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jbyteArray input) {
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jbyteArray input, jint requested_tokens) {
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return nullptr;
     const std::string model_path(path);
@@ -39,7 +39,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     const auto *vocab = llama_model_get_vocab(model.get());
     const int n = -llama_tokenize(vocab, prompt.data(), prompt.size(), nullptr, 0, true, true);
     constexpr int context_size = 8192;
-    constexpr int max_new = 384;
+    const int max_new = std::clamp(static_cast<int>(requested_tokens), 1, 384);
     if (n <= 0 || n > context_size - max_new) { fail(env, "LOCAL_PROMPT_TOO_LONG"); return nullptr; }
     std::vector<llama_token> tokens(n);
     if (llama_tokenize(vocab, prompt.data(), prompt.size(), tokens.data(), n, true, true) < 0) {

@@ -16,7 +16,7 @@ class LocalInferenceTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val model = File(context.filesDir, "tiny.gguf")
         assertTrue("CI must provide the tiny GGUF fixture", model.isFile)
-        val answer = withTimeout(120_000) { LocalInference.complete(model.absolutePath, "Tell a story.", emptyList(), "Once upon a time") }
+        val answer = withTimeout(120_000) { LocalInference.complete(model.absolutePath, "Tell a story.", emptyList(), "Once upon a time", maxTokens = 8) }
         assertTrue(answer.isNotBlank())
     }
 }

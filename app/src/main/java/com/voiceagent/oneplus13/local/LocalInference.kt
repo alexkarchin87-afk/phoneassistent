@@ -12,11 +12,11 @@ object LocalInference {
     private val lock = Any()
     private var active: Any? = null
     private val libraryLoaded = runCatching { System.loadLibrary("voiceagent_local") }
-    private external fun nativeGenerate(path: String, prompt: ByteArray): ByteArray
+    private external fun nativeGenerate(path: String, prompt: ByteArray, maxTokens: Int): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
 
-    suspend fun complete(path: String, system: String, history: List<ChatMessage>, text: String): String =
+    suspend fun complete(path: String, system: String, history: List<ChatMessage>, text: String, maxTokens: Int = 384): String =
         suspendCancellableCoroutine { continuation ->
             if (text.length > 2500) {
                 continuation.resumeWithException(IllegalArgumentException("LOCAL_PROMPT_TOO_LONG"))
@@ -38,7 +38,7 @@ object LocalInference {
                 try {
                     libraryLoaded.getOrThrow()
                     val prompt = qwenPrompt(system, history, text)
-                    val result = nativeGenerate(path, prompt.toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8).trim()
+                    val result = nativeGenerate(path, prompt.toByteArray(Charsets.UTF_8), maxTokens).toString(Charsets.UTF_8).trim()
                     if (result.isEmpty()) error("LOCAL_EMPTY_RESPONSE")
                     continuation.resume(result)
                 } catch (e: Throwable) {
