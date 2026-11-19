@@ -264,8 +264,13 @@ class AgentOrchestrator(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
-                AgentEventBus.publish(AgentEvent.Error("Не удалось спросить Claude", t))
-                tts.speak("Не получилось спросить Claude — проверь ключ в Настройках.")
+                val message = if (t.message.orEmpty().contains("LOCAL_CLAUDE_DISABLED")) {
+                    friendlyAssistantError(t)
+                } else {
+                    "Не получилось спросить Claude — проверь ключ в Настройках."
+                }
+                AgentEventBus.publish(AgentEvent.Error(message, t))
+                tts.speak(message)
             }
             return
         }
