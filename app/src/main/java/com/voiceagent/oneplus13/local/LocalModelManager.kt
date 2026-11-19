@@ -21,7 +21,7 @@ class LocalModelManager(context: Context) {
     val modelFile get() = File(directory, "qwen-1.5b.gguf")
     val isLocal get() = prefs.getBoolean("local_enabled", false)
     val downloadId get() = prefs.getLong("download_id", -1L)
-    val ready get() = prefs.getBoolean("verified", false) && modelFile.isFile && modelFile.length() > 1_000_000_000L
+    val ready get() = prefs.getBoolean("verified", false) && modelFile.isFile && modelFile.length() == 1_117_320_736L && modelFile.lastModified() == prefs.getLong("verified_modified", -1L)
 
     fun useCloud() { prefs.edit().putBoolean("local_enabled", false).apply() }
     fun useLocal() {
@@ -78,7 +78,7 @@ class LocalModelManager(context: Context) {
         val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
         check(actual == SHA256) { "LOCAL_CHECKSUM_FAILED" }
         check(partial.renameTo(modelFile)) { "LOCAL_RENAME_FAILED" }
-        prefs.edit().putBoolean("verified", true).remove("download_id").apply()
+        prefs.edit().putBoolean("verified", true).putLong("verified_modified", modelFile.lastModified()).remove("download_id").apply()
     }
     companion object {
         const val MODEL_URL = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/dd26da440ef0330c47919d1ecae0966d24022222/qwen2.5-1.5b-instruct-q4_k_m.gguf"

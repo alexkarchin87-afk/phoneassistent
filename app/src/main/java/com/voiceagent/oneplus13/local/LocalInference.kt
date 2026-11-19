@@ -18,6 +18,10 @@ object LocalInference {
 
     suspend fun complete(path: String, system: String, history: List<ChatMessage>, text: String): String =
         suspendCancellableCoroutine { continuation ->
+            if (text.length > 2500) {
+                continuation.resumeWithException(IllegalArgumentException("LOCAL_PROMPT_TOO_LONG"))
+                return@suspendCancellableCoroutine
+            }
             val request = Any()
             continuation.invokeOnCancellation {
                 synchronized(lock) { if (active === request && libraryLoaded.isSuccess) nativeCancel() }
@@ -57,6 +61,6 @@ internal fun qwenPrompt(system: String, history: List<ChatMessage>, text: String
                 append(safe(message.content.take(900))).append("<|im_end|>\n")
             }
         }
-        append("<|im_start|>user\n").append(safe(text.take(2500))).append("<|im_end|>\n<|im_start|>assistant\n")
+        append("<|im_start|>user\n").append(safe(text)).append("<|im_end|>\n<|im_start|>assistant\n")
     }
 }

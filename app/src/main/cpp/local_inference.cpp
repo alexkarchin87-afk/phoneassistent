@@ -38,7 +38,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     if (cancelled) { fail(env, "LOCAL_CANCELLED"); return nullptr; }
     const auto *vocab = llama_model_get_vocab(model.get());
     const int n = -llama_tokenize(vocab, prompt.data(), prompt.size(), nullptr, 0, true, true);
-    constexpr int context_size = 4096;
+    constexpr int context_size = 8192;
     constexpr int max_new = 384;
     if (n <= 0 || n > context_size - max_new) { fail(env, "LOCAL_PROMPT_TOO_LONG"); return nullptr; }
     std::vector<llama_token> tokens(n);
