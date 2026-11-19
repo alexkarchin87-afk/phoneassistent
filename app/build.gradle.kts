@@ -22,6 +22,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
 
         buildConfigField("String", "DEEPSEEK_API_KEY", "\"\"")
         buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"\"")
@@ -32,7 +34,7 @@ android {
     buildTypes {
         create("recovery") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".accesscheck"
+            applicationIdSuffix = ".localmodel"
             matchingFallbacks += listOf("debug")
         }
         release {
@@ -40,6 +42,7 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -56,6 +59,8 @@ android {
 }
 
 dependencies {
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")

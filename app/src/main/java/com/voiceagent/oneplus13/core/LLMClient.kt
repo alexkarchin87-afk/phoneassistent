@@ -1,6 +1,8 @@
 package com.voiceagent.oneplus13.core
 
 import android.content.Context
+import com.voiceagent.oneplus13.local.LocalInference
+import com.voiceagent.oneplus13.local.LocalModelManager
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
@@ -75,6 +77,7 @@ class LLMClient(
     private val maxRetries: Int = 2
 ) {
     private val secrets = context?.let { SecretsStore(it) }
+    private val local = context?.let { LocalModelManager(it) }
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -100,6 +103,10 @@ class LLMClient(
         userText: String,
         forceComplex: Boolean = false
     ): String = withContext(Dispatchers.IO) {
+        if (local?.isLocal == true) {
+            check(local.ready) { "LOCAL_MODEL_MISSING" }
+            return@withContext LocalInference.complete(local.modelFile.absolutePath, systemPrompt, history, userText)
+        }
         val complex = forceComplex || isComplexTask(userText)
         val draftModel = if (complex) "deepseek-reasoner" else "deepseek-chat"
         val draft = completeDeepSeek(draftModel, systemPrompt, history, userText)
@@ -148,6 +155,7 @@ class LLMClient(
      */
     suspend fun askClaudeDirect(systemPrompt: String, history: List<ChatMessage>, userText: String): String =
         withContext(Dispatchers.IO) {
+            if (local?.isLocal == true) error("LOCAL_CLAUDE_DISABLED")
             val claudeKey = secrets?.get(SecretsStore.KEY_CLAUDE_API_KEY).orEmpty()
             if (claudeKey.isBlank()) {
                 // Деградация: нет ключа Claude в Настройках — не роняем команду,

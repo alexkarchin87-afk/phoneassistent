@@ -71,6 +71,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.voiceagent.oneplus13.local.LocalModelSection
 import com.voiceagent.oneplus13.core.BackupManager
 import com.voiceagent.oneplus13.core.CrashLogger
 import com.voiceagent.oneplus13.core.FeatureRequests
@@ -172,6 +173,9 @@ fun SettingsScreen(
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             SettingsColumn {
+                SettingsGroup(title = "Мозг ассистента", description = "Выбор модели применяется к голосовому агенту и Telegram.") {
+                    LocalModelSection()
+                }
                 SettingsGroup(title = "Диагностика", description = "Здесь видно состояние основных доступов и модели речи.") {
                     DiagnosticsSection()
                 }
@@ -179,7 +183,7 @@ fun SettingsScreen(
                     RootAccessSection()
                 }
 
-                    SettingsGroup(title = "Ключи ассистента", description = "Для ответов ИИ нужен ключ DeepSeek API. После сохранения перезапусти агента.") {
+                    SettingsGroup(title = "Ключи ассистента", description = "Для облачных ответов нужен ключ DeepSeek API. Для локальной модели ключ не нужен.") {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             KeyField("DeepSeek API key", deepSeekKey, revealKeys) { deepSeekKey = it; saved = false }
                             KeyField("Claude (Anthropic) API key", claudeKey, revealKeys) { claudeKey = it; saved = false }
@@ -213,7 +217,7 @@ fun SettingsScreen(
 
                     SettingsGroup(
                         title = "Telegram",
-                        description = "Сохрани токен бота и ключ DeepSeek, запусти Telegram, отправь боту /start и подтверди свой личный чат здесь. Сообщения подтверждённого чата отправляются в DeepSeek. Управление телефоном из Telegram пока недоступно."
+                        description = "Сохрани токен бота, запусти Telegram, отправь боту /start и подтверди свой личный чат здесь. Для ответов используется выбранный мозг. Telegram требует интернет; управление телефоном из бота пока недоступно."
                     ) {
                         SettingsRow(
                             icon = VaIcons.Info,

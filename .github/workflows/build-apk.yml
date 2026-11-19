@@ -44,6 +44,9 @@ jobs:
       - name: Write local.properties (sdk.dir only — секреты НЕ коммитим)
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
+      - name: Prepare pinned local inference engine
+        run: bash scripts/prepare_llama.sh
+
       - name: Run Android unit tests
         run: gradle testDebugUnitTest --stacktrace
 
@@ -56,11 +59,22 @@ jobs:
       - name: Assemble debug APK
         run: gradle assembleDebug --stacktrace
 
+      - name: Assemble local inference instrumentation tests
+        run: gradle assembleDebugAndroidTest --stacktrace
+
+      - name: Upload instrumentation APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceagent-local-tests
+          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+
       - name: Verify model assets in APK
         run: |
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/uuid'
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/am/final.mdl'
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+          for abi in arm64-v8a x86_64; do
+            unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F "lib/$abi/libvoiceagent_local.so"
             unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F "lib/$abi/libjnidispatch.so"
           done
 
@@ -76,7 +90,7 @@ jobs:
 
       - name: Verify recovery native libraries
         run: |
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+          for abi in arm64-v8a x86_64; do
             unzip -l app/build/outputs/apk/recovery/app-recovery.apk | grep -F "lib/$abi/libjnidispatch.so"
           done
 
@@ -102,6 +116,12 @@ jobs:
         with:
           name: voiceagent-recovery-apk
           path: recovery-apk
+      - uses: actions/download-artifact@v4
+        with:
+          name: voiceagent-local-tests
+          path: local-tests
+      - name: Download tiny model for native inference test
+        run: curl --fail --location --retry 3 -o tiny.gguf https://huggingface.co/ggml-org/tiny-llamas/resolve/def3e2dd70df35ecbf6403ea347de4c5977220c1/stories260K.gguf
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -117,5 +137,10 @@ jobs:
           disable-animations: true
           script: |
             python3 scripts/android_smoke.py smoke-apk/app-debug.apk
-            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.accesscheck python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
+            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.localmodel python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
             adb shell run-as com.voiceagent.oneplus13 ls files/smoke_data_kept
+            adb push tiny.gguf /data/local/tmp/voiceagent-tiny.gguf
+            adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-tiny.gguf files/tiny.gguf
+            adb install -r local-tests/app-debug-androidTest.apk
+            adb shell am instrument -w com.voiceagent.oneplus13.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.log
+            grep -F "OK (1 test)" instrument.log

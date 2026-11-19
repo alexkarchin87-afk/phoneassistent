@@ -19,6 +19,10 @@ internal fun localAnswer(text: String, now: Date = Date()): String? {
 internal fun friendlyAssistantError(error: Throwable): String {
     val detail = error.message.orEmpty()
     return when {
+        detail.contains("LOCAL_MODEL_MISSING") -> "Локальная модель не найдена. Проверь её в настройках мозга."
+        detail.contains("LOCAL_CLAUDE_DISABLED") -> "Сейчас выбран локальный режим. Чтобы спросить Claude, переключи мозг в облачный режим."
+        detail.contains("LOCAL_PROMPT_TOO_LONG") -> "Запрос слишком длинный для локальной модели. Попробуй короче."
+        detail.contains("LOCAL_") -> "Локальной модели не удалось ответить. Проверь файл модели и свободную память телефона."
         detail.contains("DeepSeek API key is not set") -> "Добавь ключ DeepSeek API в настройках: Ключи и диагностика."
         detail.contains("HTTP 401") || detail.contains("HTTP 403") -> "DeepSeek отклонил ключ. Проверь его в настройках."
         detail.contains("HTTP 402") -> "DeepSeek сообщает о нехватке средств. Проверь баланс API."
