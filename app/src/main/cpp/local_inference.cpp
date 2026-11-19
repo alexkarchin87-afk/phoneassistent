@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <android/log.h>
 #include <llama.h>
 #include <algorithm>
 #include <atomic>
@@ -9,6 +10,10 @@
 // Requests run on one Kotlin executor. Cancellation can arrive on another thread.
 static std::atomic<bool> cancelled{false};
 static bool abort_decode(void *) { return cancelled.load(); }
+static void log_errors(ggml_log_level level, const char *text, void *) {
+    if (level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN)
+        __android_log_write(ANDROID_LOG_WARN, "VoiceAgentLocal", text);
+}
 static void fail(JNIEnv *env, const char *message) {
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message);
 }
@@ -29,6 +34,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     const std::string model_path(path);
     env->ReleaseStringUTFChars(jpath, path);
     const std::string prompt = bytes(env, input);
+    llama_log_set(log_errors, nullptr);
     struct BackendGuard { BackendGuard() { llama_backend_init(); } ~BackendGuard() { llama_backend_free(); } } backend;
     auto params = llama_model_default_params();
     params.n_gpu_layers = 0;
