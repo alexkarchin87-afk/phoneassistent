@@ -173,14 +173,15 @@ fun SettingsScreen(
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             SettingsColumn {
-                SettingsGroup(title = "Мозг ассистента", description = "Выбор модели применяется к голосовому агенту и Telegram.") {
-                    LocalModelSection()
-                }
                 SettingsGroup(title = "Диагностика", description = "Здесь видно состояние основных доступов и модели речи.") {
                     DiagnosticsSection()
                 }
                 SettingsGroup(title = "Root-доступ", description = "Проверка запрашивает root в Magisk или KernelSU и проверяет только его наличие. Другие разрешения Android включаются отдельно.") {
                     RootAccessSection()
+                }
+
+                SettingsGroup(title = "Мозг ассистента", description = "Выбор модели применяется к голосовому агенту и Telegram.") {
+                    LocalModelSection()
                 }
 
                     SettingsGroup(title = "Ключи ассистента", description = "Для облачных ответов нужен ключ DeepSeek API. Для локальной модели ключ не нужен.") {

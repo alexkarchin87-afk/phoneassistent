@@ -130,6 +130,12 @@ while time.time() < end:
     time.sleep(1)
 else: raise AssertionError('Root check did not finish or its result is off-screen: '+snapshot)
 for _ in range(8):
+    if find('Скачать Qwen через Wi-Fi') is not None: break
+    adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
+    time.sleep(1)
+else:
+    raise AssertionError('Local model download option is not accessible: '+ET.tostring(tree(), encoding='unicode'))
+for _ in range(8):
     if find('DeepSeek API key') is not None: break
     adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
     time.sleep(1)
