@@ -46,7 +46,8 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
         fail(env, "LOCAL_TOKENIZE_FAILED"); return nullptr;
     }
     auto cp = llama_context_default_params();
-    cp.n_ctx = context_size;
+    // Allocate only the context needed for this request, rounded to a batch.
+    cp.n_ctx = std::max(512, ((n + max_new + 255) / 256) * 256);
     cp.n_batch = 256;
     cp.n_ubatch = 128;
     cp.n_threads = 4;
