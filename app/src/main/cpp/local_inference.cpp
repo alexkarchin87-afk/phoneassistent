@@ -30,7 +30,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeCancel(JNIEnv *, jobjec
 extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeReset(JNIEnv *, jobject) { cancelled = false; }
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens) {
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful) {
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return nullptr;
     const std::string model_path(path);
@@ -72,16 +72,17 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     if (llama_chat_apply_template(tmpl, messages.data(), messages.size(), true, prompt.data(), prompt_len) != prompt_len) {
         fail(env, "LOCAL_TEMPLATE_UNSUPPORTED"); return nullptr;
     }
-    // Qwen 3.5/3.8 non-thinking template: avoid exhausting the short agent reply budget on hidden reasoning.
+    // Qwen 3.5/3.8 supports explicit thinking/non-thinking chat prefixes.
     char arch[64] = {};
     llama_model_meta_val_str(model.get(), "general.architecture", arch, sizeof(arch));
+    const bool qwen_reasoning = (std::string(arch) == "qwen35" || std::string(arch) == "qwen35moe") && thoughtful;
     if (std::string(arch) == "qwen35" || std::string(arch) == "qwen35moe") {
-        prompt += "<think>\n\n</think>\n\n";
+        prompt += qwen_reasoning ? "<think>\n" : "<think>\n\n</think>\n\n";
     }
     const auto *vocab = llama_model_get_vocab(model.get());
     const int n = -llama_tokenize(vocab, prompt.data(), prompt.size(), nullptr, 0, true, true);
     constexpr int context_size = 8192;
-    const int max_new = std::clamp(static_cast<int>(requested_tokens), 1, 384);
+    const int max_new = std::clamp(static_cast<int>(requested_tokens), 1, 1536);
     if (n <= 0 || n > context_size - max_new) { fail(env, "LOCAL_PROMPT_TOO_LONG"); return nullptr; }
     std::vector<llama_token> tokens(n);
     if (llama_tokenize(vocab, prompt.data(), prompt.size(), tokens.data(), n, true, true) < 0) {
@@ -107,12 +108,12 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
             fail(env, cancelled ? "LOCAL_CANCELLED" : "LOCAL_DECODE_FAILED"); return nullptr;
         }
     }
-    std::string output;
+    std::string output = qwen_reasoning ? "<think>\n" : "";
     for (int i = 0; i < max_new && !cancelled; ++i) {
         auto token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
         if (llama_vocab_is_eog(vocab, token)) break;
         char buf[256];
-        const int length = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, false);
+        const int length = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, true);
         if (length < 0) { fail(env, "LOCAL_TOKEN_FAILED"); return nullptr; }
         output.append(buf, length);
         if (llama_decode(ctx.get(), llama_batch_get_one(&token, 1)) != 0) {

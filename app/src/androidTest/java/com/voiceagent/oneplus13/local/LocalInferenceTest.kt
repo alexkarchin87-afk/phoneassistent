@@ -22,4 +22,19 @@ class LocalInferenceTest {
             assertTrue(answer.isNotBlank())
         }
     }
+    @Test fun qwen35FastAndThoughtfulModes() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val model = File(context.filesDir, "qwen35.gguf")
+        assertTrue("CI must supply the Qwen 3.5 test model", model.isFile && model.length() > 500_000_000L)
+        ParcelFileDescriptor.open(model, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+            val fast = withTimeout(180_000) { LocalInference.completeDescriptorForTest(fd, "Be brief.", "Say hello.", maxTokens = 12) }
+            assertTrue(fast.isNotBlank())
+        }
+        ParcelFileDescriptor.open(model, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+            val thoughtful = runCatching { withTimeout(180_000) { LocalInference.completeDescriptorForTest(fd, "Be brief.", "Say hello.", thoughtful = true, maxTokens = 12) } }
+            // A short thinking budget may end before the answer. It must never leak partial reasoning.
+            thoughtful.exceptionOrNull()?.let { error -> assertTrue(error.message.orEmpty().contains("LOCAL_THINKING_INCOMPLETE")) }
+            thoughtful.getOrNull()?.let { assertTrue(it.isNotBlank() && !it.contains("<think>")) }
+        }
+    }
 }

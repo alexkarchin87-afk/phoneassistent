@@ -24,6 +24,7 @@ internal fun friendlyAssistantError(error: Throwable): String {
         detail.contains("LOCAL_NOT_GGUF") -> "Выбранный файл не является моделью GGUF."
         detail.contains("LOCAL_FILE_UNAVAILABLE") -> "Не удалось открыть файл модели. Выбери его заново в настройках."
         detail.contains("LOCAL_TEMPLATE_UNSUPPORTED") -> "Формат диалога этой модели пока не поддерживается."
+        detail.contains("LOCAL_THINKING_INCOMPLETE") -> "Модель не успела завершить рассуждение. Попробуй короткий вопрос или быстрый режим."
         detail.contains("LOCAL_EMPTY_RESPONSE") -> "Модель не дала готового ответа. Попробуй короткий вопрос или другую модель."
         detail.contains("LOCAL_PROMPT_TOO_LONG") -> "Запрос слишком длинный для локальной модели. Попробуй короче."
         detail.contains("LOCAL_") -> "Локальной модели не удалось ответить. Проверь файл модели и свободную память телефона."

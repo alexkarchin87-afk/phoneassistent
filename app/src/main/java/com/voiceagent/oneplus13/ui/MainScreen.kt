@@ -232,7 +232,7 @@ private fun PhoneLayout(
     onClearHistory: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().imePadding()) {
         HomeTopBar(
             onNewChat = if (messages.isNotEmpty()) onNewChat else null,
             onOpenHistory = onOpenHistory,
@@ -264,7 +264,6 @@ private fun PhoneLayout(
             modifier = Modifier
                 .padding(horizontal = 12.dp, vertical = 8.dp)
                 .navigationBarsPadding()
-                .imePadding()
         )
     }
 }

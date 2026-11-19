@@ -32,6 +32,10 @@ fun LocalModelSection() {
     var verifying by remember { mutableStateOf(false) }
     val isLocal = remember(refresh) { manager.isLocal }
     val ready = remember(refresh) { manager.downloadedReady }
+    val recommendedReady = remember(refresh) { manager.recommendedReady }
+    val recommendedId = remember(refresh) { manager.recommendedDownloadId }
+    var recommendedStatus by remember { mutableStateOf("") }
+    var recommendedVerifying by remember { mutableStateOf(false) }
     val imported = remember(refresh) { manager.importedModels() }
     val selectedUri = remember(refresh) { manager.selectedUri }
     val selectedName = remember(refresh) { manager.selectedName }
@@ -79,10 +83,49 @@ fun LocalModelSection() {
             delay(1200)
         }
     }
+    LaunchedEffect(recommendedId) {
+        if (recommendedId == -1L) return@LaunchedEffect
+        while (true) {
+            when (val state = manager.recommendedDownloadStatus()) {
+                DownloadStatus.Idle -> break
+                is DownloadStatus.Downloading -> recommendedStatus = state.percent?.let { "Загрузка Qwen 3.5: $it%." } ?: "Ожидание Wi-Fi."
+                DownloadStatus.Failed -> { recommendedStatus = "Загрузка не удалась. Отмени её и попробуй снова."; break }
+                DownloadStatus.Downloaded -> {
+                    recommendedVerifying = true
+                    recommendedStatus = "Проверяем загруженный файл…"
+                    try {
+                        manager.verifyRecommendedDownload()
+                        manager.selectRecommended()
+                        recommendedStatus = "Qwen 3.5 проверена и выбрана."
+                        refresh++
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { recommendedStatus = "Проверка не прошла. Отмени загрузку и попробуй снова." }
+                    finally { recommendedVerifying = false }
+                    break
+                }
+            }
+            delay(1200)
+        }
+    }
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(if (isLocal) "Сейчас: $selectedName" else "Сейчас: облачные модели")
+        Text("Рекомендуемая Qwen 3.5 4B: 3,03 ГБ. Работает на телефоне и поддерживает быстрый и вдумчивый режимы. Скачать по Wi-Fi; нужно не менее 3,5 ГБ свободного места.")
+        if (recommendedStatus.isNotBlank()) Text(recommendedStatus)
+        if (!recommendedReady && recommendedId == -1L) {
+            Button(onClick = {
+                try { manager.startRecommendedDownload(); recommendedStatus = "Загрузка добавлена в систему."; refresh++ }
+                catch (_: Exception) { recommendedStatus = "Не удалось начать загрузку. Проверь место и системные загрузки." }
+            }) { Text("Скачать Qwen 3.5 4B") }
+        }
+        if (recommendedId != -1L && !recommendedVerifying) {
+            OutlinedButton(onClick = { manager.cancelRecommendedDownload(); recommendedStatus = "Загрузка отменена."; refresh++ }) { Text("Отменить загрузку Qwen 3.5") }
+        }
+        if (recommendedReady && (!isLocal || selectedName != "Qwen 3.5 4B")) {
+            Button(onClick = { manager.selectRecommended(); refresh++ }) { Text("Использовать Qwen 3.5 4B") }
+        }
         Text("Выбери уже скачанный одиночный файл GGUF. Приложение попробует читать его без копирования; если файл лежит внутри другого приложения, сначала экспортируй его в общую папку.")
         OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Выбрать свою модель GGUF") }
+        Text("Режим выбирается рядом с полем ввода. Для Qwen 3.5 вдумчивый режим включает рассуждение; для других моделей результат зависит от их возможностей. В облаке вдумчивый режим может увеличить расходы API.")
         Text("Модели 14B и 27B могут занимать более 10 ГБ памяти и долго отвечать. Скорость и доступная память зависят от телефона. Файлы не скачиваются повторно.")
         imported.forEach { model ->
             OutlinedButton(onClick = { manager.selectImported(model); status = "Выбрана ${model.name}."; refresh++ }) {

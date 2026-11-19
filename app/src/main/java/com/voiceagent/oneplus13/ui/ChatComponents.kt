@@ -31,6 +31,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -51,6 +54,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import com.voiceagent.oneplus13.core.ResponseMode
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -405,6 +410,10 @@ fun Composer(
     onMicClick: (() -> Unit)? = null
 ) {
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val mode = remember(context) { ResponseMode(context) }
+    var thoughtful by remember { mutableStateOf(mode.thoughtful) }
+    var modeMenu by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
     val canSend = input.isNotBlank()
     val shape = RoundedCornerShape(28.dp)
@@ -425,6 +434,19 @@ fun Composer(
             .padding(start = 6.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Box {
+            TextButton(onClick = { modeMenu = true }) {
+                Text(if (thoughtful) "Вдумчиво ▾" else "Быстро ▾", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+            DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
+                DropdownMenuItem(text = { Text("Быстро — короче и быстрее") }, onClick = {
+                    thoughtful = false; mode.thoughtful = false; modeMenu = false
+                })
+                DropdownMenuItem(text = { Text("Вдумчиво — дольше, с проверкой") }, onClick = {
+                    thoughtful = true; mode.thoughtful = true; modeMenu = false
+                })
+            }
+        }
         TextField(
             value = input,
             onValueChange = { input = it },

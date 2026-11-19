@@ -69,10 +69,37 @@ else:
     raise AssertionError('Offline quick command not found')
 tap(prompt)
 wait_for('Сейчас', 45)
+# The response mode is selectable next to the composer and persists to preferences.
+tap(wait_for('Быстро ▾', 30))
+tap(wait_for('Вдумчиво — дольше', 30))
+mode_xml = adb('shell', 'run-as', PACKAGE, 'cat', 'shared_prefs/response_mode.xml')
+if not re.search(r'<boolean name="thoughtful" value="true"', mode_xml):
+    raise AssertionError('Thoughtful mode not persisted: '+mode_xml)
+tap(wait_for('Вдумчиво ▾', 30))
+tap(wait_for('Быстро — короче', 30))
 # An ordinary message without a key must return an actionable error.
 edit = next((e for e in tree().iter('node') if e.get('class') == 'android.widget.EditText'), None)
 if edit is None: raise AssertionError('Chat input not found')
 tap(edit)
+# On devices exposing IME insets in dumpsys, ensure the composer is close above
+# the keyboard instead of being pushed up by the keyboard height twice.
+edit = next((e for e in tree().iter('node') if e.get('class') == 'android.widget.EditText'), None)
+if edit is None: raise AssertionError('Chat input disappeared after opening keyboard')
+edit_rect = list(map(int, re.findall(r'\d+', edit.attrib['bounds'])))
+window_info = adb('shell', 'dumpsys', 'window', 'displays')
+for line in window_info.splitlines():
+    if re.search(r'(?:mType|type)=ime\b', line, re.I) and re.search(r'(?:mVisible|visible)=true', line, re.I):
+        frame = re.search(r'(?:mFrame|frame)=\[(\d+),(\d+)\]\[(\d+),(\d+)\]', line)
+        if frame:
+            left, top, right, bottom = map(int, frame.groups())
+            if bottom > top and top > 0:
+                gap = top - edit_rect[3]
+                print('Keyboard/composer gap:', gap)
+                if gap < -25 or gap > max(200, (bottom-top)//2):
+                    raise AssertionError('Composer is too far from or behind keyboard: '+str(gap))
+                break
+else:
+    print('IME bounds unavailable in emulator window dump; keyboard placement needs device check.')
 adb('shell', 'input', 'text', 'hello')
 tap(wait_for('Отправить', 30))
 wait_for('Добавь ключ DeepSeek API', 60)

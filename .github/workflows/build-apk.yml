@@ -122,6 +122,10 @@ jobs:
           path: local-tests
       - name: Download tiny model for native inference test
         run: curl --fail --location --retry 3 -o tiny.gguf https://huggingface.co/ggml-org/tiny-llamas/resolve/def3e2dd70df35ecbf6403ea347de4c5977220c1/stories260K.gguf
+      - name: Download small Qwen 3.5 test model
+        run: |
+          curl --fail --location --retry 3 -o qwen35.gguf https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf
+          echo "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf  qwen35.gguf" | sha256sum -c -
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -137,10 +141,13 @@ jobs:
           disable-animations: true
           script: |
             python3 scripts/android_smoke.py smoke-apk/app-debug.apk
-            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.models python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
+            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.smart python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
             adb shell run-as com.voiceagent.oneplus13 ls files/smoke_data_kept
             adb push tiny.gguf /data/local/tmp/voiceagent-tiny.gguf
             adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-tiny.gguf files/tiny.gguf
+            adb push qwen35.gguf /data/local/tmp/voiceagent-qwen35.gguf
+            adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-qwen35.gguf files/qwen35.gguf
+            adb shell rm /data/local/tmp/voiceagent-qwen35.gguf
             adb install -r local-tests/app-debug-androidTest.apk
             adb shell am instrument -w com.voiceagent.oneplus13.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.log
-            grep -F "OK (1 test)" instrument.log || { adb logcat -d -v brief | tail -250; exit 1; }
+            grep -F "OK (2 tests)" instrument.log || { adb logcat -d -v brief | tail -250; exit 1; }

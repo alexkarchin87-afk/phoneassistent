@@ -56,16 +56,10 @@ private data class ClaudeResponse(val content: List<ClaudeContentBlock>)
  * "Мозг" за AgentOrchestrator: превращает транскрипт + контекст либо в
  * голосовой ответ, либо в структурированный запрос на действие.
  *
- * Никакого ручного выбора "головы" в Настройках нет — маршрутизация
- * автоматическая, по сложности конкретного запроса:
- *
- * - Простой запрос -> только DeepSeek-chat (V3), один вызов, быстро и дёшево.
- * - Сложный запрос (см. [isComplexTask], либо вызывающий код явно попросил
- *   через [forceComplex] — так делает генерация кода) -> сперва черновик
- *   от DeepSeek-R1 (сильнее рассуждает, но медленнее), а если в Настройках
- *   есть ключ Claude — черновик уходит на проверку/исправление ошибок в
- *   Claude, и уже её ответ возвращается как финальный. Если ключа Claude
- *   нет — просто возвращаем черновик R1, деградация без ошибки.
+ * Режим ответа задаёт пользователь: быстрый использует DeepSeek-chat, а
+ * вдумчивый — DeepSeek-reasoner с необязательной проверкой Claude. Выбор
+ * локальной модели не отправляет запросы в облако. Генерация кода может
+ * отдельно запросить сложный облачный маршрут через forceComplex.
  *
  * Предпочитает ключи, введённые в Настройках (SecretsStore), над тем, что
  * зашито в local.properties при сборке — так их можно сменить без пересборки.
@@ -77,6 +71,7 @@ class LLMClient(
     private val maxRetries: Int = 2
 ) {
     private val secrets = context?.let { SecretsStore(it) }
+    private val responseMode = context?.let { ResponseMode(it) }
     private val local = context?.let { LocalModelManager(it) }
 
     private val http = OkHttpClient.Builder()
@@ -92,8 +87,7 @@ class LLMClient(
     private val claudeResponseAdapter = moshi.adapter(ClaudeResponse::class.java)
 
     /**
-     * @param forceComplex — не полагаться на автоопределение и сразу считать
-     *   задачу сложной (R1 + проверка Claude). Используется генерацией кода
+     * @param forceComplex — считать облачную задачу сложной (R1 + проверка Claude). Используется генерацией кода
      *   ([com.voiceagent.oneplus13.devassist.CodeGenAgent]) — там цена ошибки
      *   выше, чем цена лишнего вызова.
      */
@@ -103,13 +97,14 @@ class LLMClient(
         userText: String,
         forceComplex: Boolean = false
     ): String = withContext(Dispatchers.IO) {
+        val thoughtful = responseMode?.thoughtful == true
         if (local?.isLocal == true) {
             check(local.ready) { "LOCAL_MODEL_MISSING" }
             val uri = local.selectedUri
-            return@withContext if (uri != null) LocalInference.completeUri(local.contextForInference, uri, systemPrompt, history, userText)
-            else LocalInference.complete(local.modelFile.absolutePath, systemPrompt, history, userText)
+            return@withContext if (uri != null) LocalInference.completeUri(local.contextForInference, uri, systemPrompt, history, userText, thoughtful)
+            else LocalInference.complete(local.modelFile.absolutePath, systemPrompt, history, userText, if (thoughtful) 1536 else 384, thoughtful)
         }
-        val complex = forceComplex || isComplexTask(userText)
+        val complex = forceComplex || thoughtful
         val draftModel = if (complex) "deepseek-reasoner" else "deepseek-chat"
         val draft = completeDeepSeek(draftModel, systemPrompt, history, userText)
 
@@ -128,25 +123,6 @@ class LLMClient(
             android.util.Log.w("LLMClient", "Claude review failed; using DeepSeek response", error)
             draft
         }
-    }
-
-    /**
-     * Грубая, но дешёвая (без лишнего сетевого вызова) эвристика сложности.
-     * Смысл не в идеальной точности, а в том, чтобы не гонять каждое "привет"
-     * через R1 + Claude — это медленнее и дороже без видимой пользы.
-     */
-    private fun isComplexTask(userText: String): Boolean {
-        val normalized = userText.lowercase()
-        val complexSignals = listOf(
-            "почему", "объясни", "докажи", "вычисли", "посчитай", "сравни",
-            "спланируй", "оптимизируй", "алгоритм", "архитектур", "почини",
-            "исправь ошибку", "проанализируй", "стратеги", "разбер"
-        )
-        val hasComplexSignal = complexSignals.any { normalized.contains(it) }
-        val isLong = userText.length > 220
-        val hasMultipleSteps = Regex("(затем|после этого|и потом|шаг \\d|во-первых|во-вторых)")
-            .containsMatchIn(normalized)
-        return hasComplexSignal || isLong || hasMultipleSteps
     }
 
     /**
