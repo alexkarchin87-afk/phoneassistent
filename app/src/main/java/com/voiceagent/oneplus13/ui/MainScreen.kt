@@ -1,6 +1,8 @@
 package com.voiceagent.oneplus13.ui
 
 import android.text.format.DateUtils
+import android.os.Build
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -13,6 +15,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -21,7 +26,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -60,6 +64,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -232,7 +237,16 @@ private fun PhoneLayout(
     onClearHistory: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
-    Column(Modifier.fillMaxSize().imePadding()) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val windowHeight = if (Build.VERSION.SDK_INT >= 30) {
+            context.getSystemService(WindowManager::class.java).currentWindowMetrics.bounds.height()
+        } else context.resources.displayMetrics.heightPixels
+        val alreadyResized = (windowHeight - constraints.maxHeight).coerceAtLeast(0)
+        val remainingIme = (imeBottom - alreadyResized).coerceAtLeast(0)
+        Column(Modifier.fillMaxSize().padding(bottom = with(density) { remainingIme.toDp() })) {
         HomeTopBar(
             onNewChat = if (messages.isNotEmpty()) onNewChat else null,
             onOpenHistory = onOpenHistory,
@@ -265,6 +279,7 @@ private fun PhoneLayout(
                 .padding(horizontal = 12.dp, vertical = 8.dp)
                 .navigationBarsPadding()
         )
+        }
     }
 }
 
