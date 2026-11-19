@@ -36,5 +36,6 @@ class LocalInferenceTest {
             thoughtful.exceptionOrNull()?.let { error -> assertTrue(error.message.orEmpty().contains("LOCAL_THINKING_INCOMPLETE")) }
             thoughtful.getOrNull()?.let { assertTrue(it.isNotBlank() && !it.contains("<think>")) }
         }
+        Unit
     }
 }
