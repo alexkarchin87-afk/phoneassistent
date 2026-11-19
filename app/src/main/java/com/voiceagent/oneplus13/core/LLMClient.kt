@@ -105,7 +105,9 @@ class LLMClient(
     ): String = withContext(Dispatchers.IO) {
         if (local?.isLocal == true) {
             check(local.ready) { "LOCAL_MODEL_MISSING" }
-            return@withContext LocalInference.complete(local.modelFile.absolutePath, systemPrompt, history, userText)
+            val uri = local.selectedUri
+            return@withContext if (uri != null) LocalInference.completeUri(local.contextForInference, uri, systemPrompt, history, userText)
+            else LocalInference.complete(local.modelFile.absolutePath, systemPrompt, history, userText)
         }
         val complex = forceComplex || isComplexTask(userText)
         val draftModel = if (complex) "deepseek-reasoner" else "deepseek-chat"

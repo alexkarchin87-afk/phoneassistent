@@ -28,12 +28,12 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeCancel(JNIEnv *, jobjec
 extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeReset(JNIEnv *, jobject) { cancelled = false; }
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jbyteArray input, jint requested_tokens) {
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens) {
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return nullptr;
     const std::string model_path(path);
     env->ReleaseStringUTFChars(jpath, path);
-    const std::string prompt = bytes(env, input);
+
     llama_log_set(log_errors, nullptr);
     struct BackendGuard { BackendGuard() { llama_backend_init(); } ~BackendGuard() { llama_backend_free(); } } backend;
     auto params = llama_model_default_params();
@@ -42,6 +42,32 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
         llama_model_load_from_file(model_path.c_str(), params), llama_model_free);
     if (!model) { fail(env, "LOCAL_MODEL_LOAD_FAILED"); return nullptr; }
     if (cancelled) { fail(env, "LOCAL_CANCELLED"); return nullptr; }
+    const auto count = env->GetArrayLength(jroles);
+    if (count <= 0 || count != env->GetArrayLength(jcontents) || count > 8) { fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr; }
+    std::vector<std::string> roles, contents;
+    roles.reserve(count); contents.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        auto role = static_cast<jbyteArray>(env->GetObjectArrayElement(jroles, i));
+        auto content = static_cast<jbyteArray>(env->GetObjectArrayElement(jcontents, i));
+        roles.push_back(bytes(env, role)); contents.push_back(bytes(env, content));
+        env->DeleteLocalRef(role); env->DeleteLocalRef(content);
+    }
+    std::vector<llama_chat_message> messages;
+    for (int i = 0; i < count; ++i) messages.push_back({roles[i].c_str(), contents[i].c_str()});
+    const char *tmpl = llama_model_chat_template(model.get(), nullptr);
+    if (!tmpl) tmpl = "chatml";
+    int prompt_len = llama_chat_apply_template(tmpl, messages.data(), messages.size(), true, nullptr, 0);
+    if (prompt_len <= 0 || prompt_len > 100000) { fail(env, "LOCAL_TEMPLATE_UNSUPPORTED"); return nullptr; }
+    std::string prompt(prompt_len, '\0');
+    if (llama_chat_apply_template(tmpl, messages.data(), messages.size(), true, prompt.data(), prompt_len) != prompt_len) {
+        fail(env, "LOCAL_TEMPLATE_UNSUPPORTED"); return nullptr;
+    }
+    // Qwen 3.5/3.8 non-thinking template: avoid exhausting the short agent reply budget on hidden reasoning.
+    char arch[64] = {};
+    llama_model_meta_val_str(model.get(), "general.architecture", arch, sizeof(arch));
+    if (std::string(arch) == "qwen35" || std::string(arch) == "qwen35moe") {
+        prompt += "<think>\n\n</think>\n\n";
+    }
     const auto *vocab = llama_model_get_vocab(model.get());
     const int n = -llama_tokenize(vocab, prompt.data(), prompt.size(), nullptr, 0, true, true);
     constexpr int context_size = 8192;

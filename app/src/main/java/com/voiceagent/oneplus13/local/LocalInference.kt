@@ -1,6 +1,11 @@
 package com.voiceagent.oneplus13.local
 
 import com.voiceagent.oneplus13.core.ChatMessage
+import android.content.Context
+import android.net.Uri
+import android.os.ParcelFileDescriptor
+import android.system.Os
+import android.system.OsConstants
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.Executors
 import kotlin.coroutines.resume
@@ -12,11 +17,30 @@ object LocalInference {
     private val lock = Any()
     private var active: Any? = null
     private val libraryLoaded = runCatching { System.loadLibrary("voiceagent_local") }
-    private external fun nativeGenerate(path: String, prompt: ByteArray, maxTokens: Int): ByteArray
+    private external fun nativeGenerate(path: String, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
 
     suspend fun complete(path: String, system: String, history: List<ChatMessage>, text: String, maxTokens: Int = 384): String =
+        completeInternal({ ModelHandle(path, null) }, system, history, text, maxTokens)
+
+    suspend fun completeUri(context: Context, uri: Uri, system: String, history: List<ChatMessage>, text: String): String =
+        completeInternal({
+            val fd = context.contentResolver.openFileDescriptor(uri, "r") ?: error("LOCAL_FILE_UNAVAILABLE")
+            try {
+                val magic = ByteArray(4)
+                val count = Os.read(fd.fileDescriptor, magic, 0, magic.size)
+                Os.lseek(fd.fileDescriptor, 0, OsConstants.SEEK_SET)
+                check(count == 4 && magic.contentEquals(byteArrayOf(71, 71, 85, 70))) { "LOCAL_NOT_GGUF" }
+                ModelHandle("/proc/self/fd/${fd.fd}", fd)
+            } catch (e: Exception) { fd.close(); throw e }
+        }, system, history, text, 384)
+
+    private data class ModelHandle(val path: String, val fd: ParcelFileDescriptor?) : AutoCloseable {
+        override fun close() { fd?.close() }
+    }
+
+    private suspend fun completeInternal(open: () -> ModelHandle, system: String, history: List<ChatMessage>, text: String, maxTokens: Int): String =
         suspendCancellableCoroutine { continuation ->
             if (text.length > 2500) {
                 continuation.resumeWithException(IllegalArgumentException("LOCAL_PROMPT_TOO_LONG"))
@@ -37,10 +61,14 @@ object LocalInference {
                 if (!run) return@execute
                 try {
                     libraryLoaded.getOrThrow()
-                    val prompt = qwenPrompt(system, history, text)
-                    val result = nativeGenerate(path, prompt.toByteArray(Charsets.UTF_8), maxTokens).toString(Charsets.UTF_8).trim()
-                    if (result.isEmpty()) error("LOCAL_EMPTY_RESPONSE")
-                    continuation.resume(result)
+                    val chat = buildLocalMessages(system, history, text)
+                    val result = open().use { handle ->
+                        nativeGenerate(handle.path, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
+                            chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens)
+                    }.toString(Charsets.UTF_8).trim()
+                    val answer = stripReasoning(result)
+                    if (answer.isEmpty()) error("LOCAL_EMPTY_RESPONSE")
+                    continuation.resume(answer)
                 } catch (e: Throwable) {
                     continuation.resumeWithException(e)
                 } finally {
@@ -63,4 +91,20 @@ internal fun qwenPrompt(system: String, history: List<ChatMessage>, text: String
         }
         append("<|im_start|>user\n").append(safe(text)).append("<|im_end|>\n<|im_start|>assistant\n")
     }
+}
+
+/** Protect role delimiters when rendering untrusted user and history content. */
+internal fun buildLocalMessages(system: String, history: List<ChatMessage>, text: String): List<ChatMessage> {
+    fun safe(value: String) = listOf("<|im_start|>", "<|im_end|>", "<｜User｜>", "<｜Assistant｜>", "<｜end▁of▁sentence｜>")
+        .fold(value) { acc, token -> acc.replace(token, "") }
+    return listOf(ChatMessage("system", safe(system))) + history.takeLast(2)
+        .filter { it.role == "user" || it.role == "assistant" }
+        .map { ChatMessage(it.role, safe(it.content.take(900))) } + ChatMessage("user", safe(text))
+}
+internal fun stripReasoning(text: String): String {
+    val begin = text.indexOf("<think>")
+    if (begin < 0) return text.trim()
+    val end = text.indexOf("</think>", begin + 7)
+    if (end < 0) return ""
+    return (text.substring(0, begin) + text.substring(end + 8)).trim()
 }

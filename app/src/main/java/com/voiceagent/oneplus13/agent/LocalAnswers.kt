@@ -21,6 +21,10 @@ internal fun friendlyAssistantError(error: Throwable): String {
     return when {
         detail.contains("LOCAL_MODEL_MISSING") -> "Локальная модель не найдена. Проверь её в настройках мозга."
         detail.contains("LOCAL_CLAUDE_DISABLED") -> "Сейчас выбран локальный режим. Чтобы спросить Claude, переключи мозг в облачный режим."
+        detail.contains("LOCAL_NOT_GGUF") -> "Выбранный файл не является моделью GGUF."
+        detail.contains("LOCAL_FILE_UNAVAILABLE") -> "Не удалось открыть файл модели. Выбери его заново в настройках."
+        detail.contains("LOCAL_TEMPLATE_UNSUPPORTED") -> "Формат диалога этой модели пока не поддерживается."
+        detail.contains("LOCAL_EMPTY_RESPONSE") -> "Модель не дала готового ответа. Попробуй короткий вопрос или другую модель."
         detail.contains("LOCAL_PROMPT_TOO_LONG") -> "Запрос слишком длинный для локальной модели. Попробуй короче."
         detail.contains("LOCAL_") -> "Локальной модели не удалось ответить. Проверь файл модели и свободную память телефона."
         detail.contains("DeepSeek API key is not set") -> "Добавь ключ DeepSeek API в настройках: Ключи и диагностика."

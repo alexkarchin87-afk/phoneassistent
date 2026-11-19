@@ -34,7 +34,7 @@ android {
     buildTypes {
         create("recovery") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".localmodel"
+            applicationIdSuffix = ".models"
             matchingFallbacks += listOf("debug")
         }
         release {
