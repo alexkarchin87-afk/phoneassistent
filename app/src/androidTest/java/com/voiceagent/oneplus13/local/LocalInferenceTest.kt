@@ -18,7 +18,7 @@ class LocalInferenceTest {
         val model = File(context.filesDir, "tiny.gguf")
         assertTrue("CI must provide the complete tiny GGUF fixture", model.isFile && model.length() > 1_000_000)
         ParcelFileDescriptor.open(model, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
-            val answer = withTimeout(120_000) { LocalInference.complete("/proc/self/fd/${fd.fd}", "Tell a story.", emptyList(), "Once upon a time", maxTokens = 8) }
+            val answer = withTimeout(120_000) { LocalInference.completeDescriptorForTest(fd, "Tell a story.", "Once upon a time") }
             assertTrue(answer.isNotBlank())
         }
     }

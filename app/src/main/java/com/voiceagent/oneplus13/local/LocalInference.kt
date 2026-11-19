@@ -17,7 +17,7 @@ object LocalInference {
     private val lock = Any()
     private var active: Any? = null
     private val libraryLoaded = runCatching { System.loadLibrary("voiceagent_local") }
-    private external fun nativeGenerate(path: String, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int): ByteArray
+    private external fun nativeGenerate(path: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
 
@@ -32,9 +32,12 @@ object LocalInference {
                 val count = Os.read(fd.fileDescriptor, magic, 0, magic.size)
                 Os.lseek(fd.fileDescriptor, 0, OsConstants.SEEK_SET)
                 check(count == 4 && magic.contentEquals(byteArrayOf(71, 71, 85, 70))) { "LOCAL_NOT_GGUF" }
-                ModelHandle("/proc/self/fd/${fd.fd}", fd)
+                ModelHandle("", fd)
             } catch (e: Exception) { fd.close(); throw e }
         }, system, history, text, 384)
+
+    internal suspend fun completeDescriptorForTest(fd: ParcelFileDescriptor, system: String, text: String): String =
+        completeInternal({ ModelHandle("", ParcelFileDescriptor.dup(fd.fileDescriptor)) }, system, emptyList(), text, 8)
 
     private data class ModelHandle(val path: String, val fd: ParcelFileDescriptor?) : AutoCloseable {
         override fun close() { fd?.close() }
@@ -63,7 +66,7 @@ object LocalInference {
                     libraryLoaded.getOrThrow()
                     val chat = buildLocalMessages(system, history, text)
                     val result = open().use { handle ->
-                        nativeGenerate(handle.path, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
+                        nativeGenerate(handle.path, handle.fd?.fd ?: -1, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
                             chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens)
                     }.toString(Charsets.UTF_8).trim()
                     val answer = stripReasoning(result)

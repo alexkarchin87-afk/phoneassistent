@@ -2,6 +2,8 @@
 #include <android/log.h>
 #include <llama.h>
 #include <algorithm>
+#include <cstdio>
+#include <unistd.h>
 #include <atomic>
 #include <memory>
 #include <string>
@@ -28,7 +30,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeCancel(JNIEnv *, jobjec
 extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeReset(JNIEnv *, jobject) { cancelled = false; }
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens) {
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens) {
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return nullptr;
     const std::string model_path(path);
@@ -38,8 +40,16 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     struct BackendGuard { BackendGuard() { llama_backend_init(); } ~BackendGuard() { llama_backend_free(); } } backend;
     auto params = llama_model_default_params();
     params.n_gpu_layers = 0;
+    std::unique_ptr<FILE, decltype(&fclose)> input(nullptr, fclose);
+    if (input_fd >= 0) {
+        int copied = dup(input_fd);
+        if (copied < 0) { fail(env, "LOCAL_FILE_UNAVAILABLE"); return nullptr; }
+        FILE *fp = fdopen(copied, "rb");
+        if (!fp) { close(copied); fail(env, "LOCAL_FILE_UNAVAILABLE"); return nullptr; }
+        input.reset(fp);
+    }
     std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
-        llama_model_load_from_file(model_path.c_str(), params), llama_model_free);
+        input ? llama_model_load_from_file_ptr(input.get(), params) : llama_model_load_from_file(model_path.c_str(), params), llama_model_free);
     if (!model) { fail(env, "LOCAL_MODEL_LOAD_FAILED"); return nullptr; }
     if (cancelled) { fail(env, "LOCAL_CANCELLED"); return nullptr; }
     const auto count = env->GetArrayLength(jroles);
