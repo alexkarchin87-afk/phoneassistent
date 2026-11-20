@@ -38,6 +38,8 @@ class LocalInferenceTest {
             thoughtful.getOrNull()?.let { assertTrue(it.isNotBlank() && !it.contains("<think>")) }
         }
         assertTrue("The same model should be reused for the next request", LocalInference.modelLoadCountForTest() == loadsAfterFast)
+        LocalInference.releaseForMemoryPressure()
+        assertTrue("The model must be released under memory pressure", !LocalInference.hasCachedModelForTest())
         Unit
     }
 }

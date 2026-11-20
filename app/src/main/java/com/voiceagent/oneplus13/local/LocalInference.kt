@@ -26,8 +26,12 @@ object LocalInference {
     private external fun nativeReset()
     private external fun nativeUnload()
     private external fun nativeModelLoadCount(): Int
+    private external fun nativeHasCachedModel(): Boolean
 
     internal fun modelLoadCountForTest(): Int = nativeModelLoadCount()
+    internal suspend fun hasCachedModelForTest(): Boolean = suspendCancellableCoroutine { continuation ->
+        executor.execute { if (continuation.isActive) continuation.resume(nativeHasCachedModel()) }
+    }
 
     /** Release weights once any in-flight inference has completed. */
     fun releaseForMemoryPressure() {

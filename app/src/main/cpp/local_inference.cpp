@@ -45,6 +45,8 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeUnload(JNIEnv *, jobject) { release_model(); }
 extern "C" JNIEXPORT jint JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeModelLoadCount(JNIEnv *, jobject) { return model_load_count.load(); }
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeHasCachedModel(JNIEnv *, jobject) { return cached_model != nullptr; }
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jstring jkey, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful) {
     const char *path = env->GetStringUTFChars(jpath, nullptr);
