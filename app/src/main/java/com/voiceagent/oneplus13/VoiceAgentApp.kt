@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.os.Build
 import com.voiceagent.oneplus13.core.CrashLogger
 import com.voiceagent.oneplus13.core.StartupGuard
+import com.voiceagent.oneplus13.local.LocalInference
+import android.content.ComponentCallbacks2
 
 /** Application entry point: sets up crash logging and the single notification channel used by the foreground service. */
 class VoiceAgentApp : Application() {
@@ -18,6 +20,13 @@ class VoiceAgentApp : Application() {
         private set
 
     fun takeInterruptedStartup(): String? = interruptedStartup.also { interruptedStartup = null }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            LocalInference.releaseForMemoryPressure()
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()

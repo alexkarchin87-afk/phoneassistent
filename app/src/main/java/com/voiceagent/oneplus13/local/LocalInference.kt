@@ -7,22 +7,40 @@ import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.system.OsConstants
 import kotlinx.coroutines.suspendCancellableCoroutine
-import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** One CPU inference at a time, including callers from the bot and voice service. */
 object LocalInference {
-    private val executor = Executors.newSingleThreadExecutor()
+    private val executor = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
+    // Managed only on the inference executor, so unloading cannot race a decode.
+    private var idleUnload: ScheduledFuture<*>? = null
     private val lock = Any()
     private var active: Any? = null
     private val libraryLoaded = runCatching { System.loadLibrary("voiceagent_local") }
-    private external fun nativeGenerate(path: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean): ByteArray
+    private external fun nativeGenerate(path: String, key: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
+    private external fun nativeUnload()
+    private external fun nativeModelLoadCount(): Int
+
+    internal fun modelLoadCountForTest(): Int = nativeModelLoadCount()
+
+    /** Release weights once any in-flight inference has completed. */
+    fun releaseForMemoryPressure() {
+        if (libraryLoaded.isFailure) return
+        executor.execute {
+            idleUnload?.cancel(false)
+            idleUnload = null
+            nativeUnload()
+        }
+    }
 
     suspend fun complete(path: String, system: String, history: List<ChatMessage>, text: String, maxTokens: Int = 384, thoughtful: Boolean = false): String =
-        completeInternal({ ModelHandle(path, null) }, system, history, text, maxTokens, thoughtful)
+        completeInternal({ ModelHandle(path, "file:$path", null) }, system, history, text, maxTokens, thoughtful)
 
     suspend fun completeUri(context: Context, uri: Uri, system: String, history: List<ChatMessage>, text: String, thoughtful: Boolean = false): String =
         completeInternal({
@@ -32,14 +50,14 @@ object LocalInference {
                 val count = Os.read(fd.fileDescriptor, magic, 0, magic.size)
                 Os.lseek(fd.fileDescriptor, 0, OsConstants.SEEK_SET)
                 check(count == 4 && magic.contentEquals(byteArrayOf(71, 71, 85, 70))) { "LOCAL_NOT_GGUF" }
-                ModelHandle("", fd)
+                ModelHandle("", "uri:$uri", fd)
             } catch (e: Exception) { fd.close(); throw e }
         }, system, history, text, if (thoughtful) 1536 else 384, thoughtful)
 
     internal suspend fun completeDescriptorForTest(fd: ParcelFileDescriptor, system: String, text: String, thoughtful: Boolean = false, maxTokens: Int = 8): String =
-        completeInternal({ ModelHandle("", ParcelFileDescriptor.dup(fd.fileDescriptor)) }, system, emptyList(), text, maxTokens, thoughtful)
+        completeInternal({ ModelHandle("", "test-fd", ParcelFileDescriptor.dup(fd.fileDescriptor)) }, system, emptyList(), text, maxTokens, thoughtful)
 
-    private data class ModelHandle(val path: String, val fd: ParcelFileDescriptor?) : AutoCloseable {
+    private data class ModelHandle(val path: String, val key: String, val fd: ParcelFileDescriptor?) : AutoCloseable {
         override fun close() { fd?.close() }
     }
 
@@ -62,12 +80,14 @@ object LocalInference {
                     }
                 }
                 if (!run) return@execute
+                idleUnload?.cancel(false)
+                idleUnload = null
                 try {
                     libraryLoaded.getOrThrow()
                     val effectiveSystem = if (thoughtful) "$system\n\nПроверяй вывод перед ответом, но сохраняй требуемый формат." else system
                     val chat = buildLocalMessages(effectiveSystem, history, text)
                     val result = open().use { handle ->
-                        nativeGenerate(handle.path, handle.fd?.fd ?: -1, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
+                        nativeGenerate(handle.path, handle.key, handle.fd?.fd ?: -1, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
                             chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens, thoughtful)
                     }.toString(Charsets.UTF_8).trim()
                     val answer = stripReasoning(result)
@@ -77,6 +97,7 @@ object LocalInference {
                     continuation.resumeWithException(e)
                 } finally {
                     synchronized(lock) { if (active === request) active = null }
+                    if (libraryLoaded.isSuccess) idleUnload = executor.schedule({ nativeUnload() }, 45, TimeUnit.SECONDS)
                 }
             }
         }

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <atomic>
 #include <memory>
 #include <string>
@@ -11,6 +12,17 @@
 
 // Requests run on one Kotlin executor. Cancellation can arrive on another thread.
 static std::atomic<bool> cancelled{false};
+// Accessed only by the single Kotlin inference executor. Each request still gets
+// a fresh context and sampler, so conversation state cannot leak between calls.
+static std::unique_ptr<llama_model, decltype(&llama_model_free)> cached_model(nullptr, llama_model_free);
+static std::string cached_key;
+static bool backend_ready = false;
+static std::atomic<int> model_load_count{0};
+static void release_model() {
+    cached_model.reset();
+    cached_key.clear();
+    if (backend_ready) { llama_backend_free(); backend_ready = false; }
+}
 static bool abort_decode(void *) { return cancelled.load(); }
 static void log_errors(ggml_log_level level, const char *text, void *) {
     if (level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN)
@@ -29,15 +41,22 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeCancel(JNIEnv *, jobject) { cancelled = true; }
 extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeReset(JNIEnv *, jobject) { cancelled = false; }
+extern "C" JNIEXPORT void JNICALL
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeUnload(JNIEnv *, jobject) { release_model(); }
+extern "C" JNIEXPORT jint JNICALL
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeModelLoadCount(JNIEnv *, jobject) { return model_load_count.load(); }
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful) {
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jstring jkey, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful) {
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return nullptr;
     const std::string model_path(path);
     env->ReleaseStringUTFChars(jpath, path);
+    const char *key_chars = env->GetStringUTFChars(jkey, nullptr);
+    if (!key_chars) return nullptr;
+    const std::string source_key(key_chars);
+    env->ReleaseStringUTFChars(jkey, key_chars);
 
     llama_log_set(log_errors, nullptr);
-    struct BackendGuard { BackendGuard() { llama_backend_init(); } ~BackendGuard() { llama_backend_free(); } } backend;
     auto params = llama_model_default_params();
     params.n_gpu_layers = 0;
     std::unique_ptr<FILE, decltype(&fclose)> input(nullptr, fclose);
@@ -48,8 +67,20 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
         if (!fp) { close(copied); fail(env, "LOCAL_FILE_UNAVAILABLE"); return nullptr; }
         input.reset(fp);
     }
-    std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
-        input ? llama_model_load_from_file_ptr(input.get(), params) : llama_model_load_from_file(model_path.c_str(), params), llama_model_free);
+    struct stat st{};
+    const bool stable_file = (input ? fstat(fileno(input.get()), &st) : stat(model_path.c_str(), &st)) == 0 && S_ISREG(st.st_mode);
+    const std::string identity = stable_file ? source_key + ":" + std::to_string(st.st_dev) + ":" +
+        std::to_string(st.st_ino) + ":" + std::to_string(st.st_size) + ":" +
+        std::to_string(st.st_mtim.tv_sec) + ":" + std::to_string(st.st_mtim.tv_nsec) : "";
+    if (!cached_model || identity.empty() || identity != cached_key) {
+        release_model();
+        llama_backend_init();
+        backend_ready = true;
+        cached_model.reset(input ? llama_model_load_from_file_ptr(input.get(), params) : llama_model_load_from_file(model_path.c_str(), params));
+        ++model_load_count;
+        cached_key = identity;
+    }
+    auto &model = cached_model;
     if (!model) { fail(env, "LOCAL_MODEL_LOAD_FAILED"); return nullptr; }
     if (cancelled) { fail(env, "LOCAL_CANCELLED"); return nullptr; }
     const auto count = env->GetArrayLength(jroles);
