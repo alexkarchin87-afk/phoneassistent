@@ -45,8 +45,8 @@ internal class ThermalMonitor(context: Context, private val update: (LocalWorkLi
     init {
         val current = if (Build.VERSION.SDK_INT >= 29) runCatching { power?.currentThermalStatus ?: 0 }.getOrDefault(0) else 0
         apply(current)
-        if (Build.VERSION.SDK_INT >= 29 && listener != null) {
-            runCatching { power?.addThermalStatusListener(Executor { it.run() }, listener) }
+        if (Build.VERSION.SDK_INT >= 29) {
+            listener?.let { registered -> runCatching { power?.addThermalStatusListener(Executor { it.run() }, registered) } }
         }
     }
 
@@ -54,6 +54,6 @@ internal class ThermalMonitor(context: Context, private val update: (LocalWorkLi
 
     override fun close() {
         synchronized(monitorLock) { live = false }
-        if (Build.VERSION.SDK_INT >= 29 && listener != null) runCatching { power?.removeThermalStatusListener(listener) }
+        if (Build.VERSION.SDK_INT >= 29) listener?.let { registered -> runCatching { power?.removeThermalStatusListener(registered) } }
     }
 }
