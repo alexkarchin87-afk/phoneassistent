@@ -7,6 +7,8 @@ import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.system.OsConstants
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -15,19 +17,23 @@ import kotlin.coroutines.resumeWithException
 
 /** One CPU inference at a time, including callers from the bot and voice service. */
 object LocalInference {
+    data class RunStats(val loadMs: Long, val promptMs: Long, val generationMs: Long, val tokens: Long, val cached: Boolean, val armEnabled: Boolean)
+    private val mutableLastRun = MutableStateFlow<RunStats?>(null)
+    val lastRun = mutableLastRun.asStateFlow()
     private val executor = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
     // Managed only on the inference executor, so unloading cannot race a decode.
     private var idleUnload: ScheduledFuture<*>? = null
     private val lock = Any()
     private var active: Any? = null
     private val libraryLoaded = runCatching { System.loadLibrary("voiceagent_local") }
-    private external fun nativeGenerate(path: String, key: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean): ByteArray
+    private external fun nativeGenerate(path: String, key: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean, armAcceleration: Boolean): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
     private external fun nativeSetWorkLimits(threads: Int, delayMs: Int)
     private external fun nativeUnload()
     private external fun nativeModelLoadCount(): Int
     private external fun nativeHasCachedModel(): Boolean
+    private external fun nativeLastRunStats(): LongArray
 
     internal fun modelLoadCountForTest(): Int = nativeModelLoadCount()
     internal suspend fun hasCachedModelForTest(): Boolean = suspendCancellableCoroutine { continuation ->
@@ -91,10 +97,13 @@ object LocalInference {
                     libraryLoaded.getOrThrow()
                     val effectiveSystem = if (thoughtful) "$system\n\nПроверяй вывод перед ответом, но сохраняй требуемый формат." else system
                     val chat = buildLocalMessages(effectiveSystem, history, text)
+                    val armEnabled = LocalPerformance.armEnabled(context)
                     val result = ThermalMonitor(context) { limits -> nativeSetWorkLimits(limits.threads, limits.delayMs) }.use { _ -> open().use { handle ->
                         nativeGenerate(handle.path, handle.key, handle.fd?.fd ?: -1, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
-                            chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens, thoughtful)
+                            chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens, thoughtful, armEnabled)
                     } }.toString(Charsets.UTF_8).trim()
+                    val stats = nativeLastRunStats()
+                    if (stats.size == 5) mutableLastRun.value = RunStats(stats[0], stats[1], stats[2], stats[3], stats[4] != 0L, armEnabled)
                     val answer = stripReasoning(result)
                     if (answer.isEmpty()) error(if (thoughtful) "LOCAL_THINKING_INCOMPLETE" else "LOCAL_EMPTY_RESPONSE")
                     continuation.resume(answer)

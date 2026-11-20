@@ -9,11 +9,17 @@ enum class LocalPerformance(val label: String, val threads: Int) {
     COOL("Прохладнее", 2), BALANCED("Сбалансированно", 3), FAST("Быстрее", 4);
 
     companion object {
+        private const val PREFS = "local_performance"
         fun read(context: Context): LocalPerformance = entries.firstOrNull {
-            it.name == context.getSharedPreferences("local_performance", Context.MODE_PRIVATE).getString("profile", BALANCED.name)
+            it.name == context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("profile", BALANCED.name)
         } ?: BALANCED
         fun save(context: Context, value: LocalPerformance) {
-            context.getSharedPreferences("local_performance", Context.MODE_PRIVATE).edit().putString("profile", value.name).apply()
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("profile", value.name).apply()
+        }
+        fun armSupported(): Boolean = Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }
+        fun armEnabled(context: Context): Boolean = armSupported() && context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("arm_acceleration", false)
+        fun setArmEnabled(context: Context, enabled: Boolean) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("arm_acceleration", enabled).apply()
         }
     }
 }

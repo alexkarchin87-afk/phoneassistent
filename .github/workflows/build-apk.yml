@@ -77,6 +77,7 @@ jobs:
             unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F "lib/$abi/libvoiceagent_local.so"
             unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F "lib/$abi/libjnidispatch.so"
           done
+          python3 -c 'import zipfile; p="app/build/outputs/apk/debug/app-debug.apk"; z=zipfile.ZipFile(p); assert b"CPU_KLEIDIAI" in z.read("lib/arm64-v8a/libvoiceagent_local.so"), "ARM acceleration missing"'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -141,7 +142,7 @@ jobs:
           disable-animations: true
           script: |
             python3 scripts/android_smoke.py smoke-apk/app-debug.apk
-            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.balanced python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
+            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.accelerated python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
             adb shell run-as com.voiceagent.oneplus13 ls files/smoke_data_kept
             adb push tiny.gguf /data/local/tmp/voiceagent-tiny.gguf
             adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-tiny.gguf files/tiny.gguf

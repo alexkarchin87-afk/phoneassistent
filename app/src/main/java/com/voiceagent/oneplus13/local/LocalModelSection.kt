@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -16,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -30,6 +32,8 @@ fun LocalModelSection() {
     var refresh by remember { mutableStateOf(0) }
     var status by remember { mutableStateOf("") }
     var performance by remember { mutableStateOf(LocalPerformance.read(context)) }
+    var armEnabled by remember { mutableStateOf(LocalPerformance.armEnabled(context)) }
+    val lastRun by LocalInference.lastRun.collectAsState()
     var verifying by remember { mutableStateOf(false) }
     val isLocal = remember(refresh) { manager.isLocal }
     val ready = remember(refresh) { manager.downloadedReady }
@@ -115,6 +119,17 @@ fun LocalModelSection() {
             OutlinedButton(onClick = { LocalPerformance.save(context, profile); performance = profile }) {
                 Text(if (profile == performance) "✓ ${profile.label}" else profile.label)
             }
+        }
+        if (LocalPerformance.armSupported()) {
+            Text("ARM-ускорение (экспериментально)")
+            Switch(checked = armEnabled, onCheckedChange = { enabled ->
+                LocalPerformance.setArmEnabled(context, enabled); armEnabled = enabled
+            })
+            Text("Попробовать оптимизированные ARM-вычисления для поддерживаемых слоёв. Первая загрузка модели может стать дольше и потребовать больше памяти; польза зависит от телефона. При проблемах выключи и повтори запрос. Изменение применяется к следующему запросу.")
+        }
+        lastRun?.let { run ->
+            Text("Последний локальный запрос: загрузка ${run.loadMs / 1000.0} с; обработка запроса ${run.promptMs / 1000.0} с; генерация ${run.generationMs / 1000.0} с, токенов ${run.tokens}. ${if (run.cached) "Модель уже была загружена." else "Модель загружалась заново."} ${if (run.armEnabled) "Выбран режим ARM; поддержка операций зависит от модели и телефона." else "Обычный режим."}")
+            Text("Токены включают скрытое рассуждение. Для сравнения используй одинаковый запрос, модель и режим; телефон и температура влияют на время.")
         }
         Text(if (isLocal) "Сейчас: $selectedName" else "Сейчас: облачные модели")
         Text("Рекомендуемая Qwen 3.5 4B: 3,03 ГБ. Работает на телефоне и поддерживает быстрый и вдумчивый режимы. Скачать по Wi-Fi; нужно не менее 3,5 ГБ свободного места.")

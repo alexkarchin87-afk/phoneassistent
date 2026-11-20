@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <atomic>
+#include <array>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -33,6 +35,11 @@ static std::unique_ptr<llama_model, decltype(&llama_model_free)> cached_model(nu
 static std::string cached_key;
 static bool backend_ready = false;
 static std::atomic<int> model_load_count{0};
+static std::array<jlong, 5> last_run_stats{}; // model load, prompt, generation ms, tokens, cache hit
+using Clock = std::chrono::steady_clock;
+static jlong elapsed_ms(Clock::time_point from, Clock::time_point to) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
 static void release_model() {
     cached_model.reset();
     cached_key.clear();
@@ -67,8 +74,15 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeModelLoadCount(JNIEnv *, jobject) { return model_load_count.load(); }
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeHasCachedModel(JNIEnv *, jobject) { return cached_model != nullptr; }
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeLastRunStats(JNIEnv *env, jobject) {
+    auto result = env->NewLongArray(last_run_stats.size());
+    if (result) env->SetLongArrayRegion(result, 0, last_run_stats.size(), last_run_stats.data());
+    return result;
+}
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jstring jkey, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful) {
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jstring jkey, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful, jboolean arm_acceleration) {
+    const auto started = Clock::now();
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return nullptr;
     const std::string model_path(path);
@@ -81,6 +95,10 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     llama_log_set(log_errors, nullptr);
     auto params = llama_model_default_params();
     params.n_gpu_layers = 0;
+#if defined(__aarch64__)
+    // Extra buffers repack supported weights for KleidiAI; OFF preserves the generic path.
+    params.use_extra_bufts = arm_acceleration;
+#endif
     std::unique_ptr<FILE, decltype(&fclose)> input(nullptr, fclose);
     if (input_fd >= 0) {
         int copied = dup(input_fd);
@@ -93,7 +111,9 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     const bool stable_file = (input ? fstat(fileno(input.get()), &st) : stat(model_path.c_str(), &st)) == 0 && S_ISREG(st.st_mode);
     const std::string identity = stable_file ? source_key + ":" + std::to_string(st.st_dev) + ":" +
         std::to_string(st.st_ino) + ":" + std::to_string(st.st_size) + ":" +
-        std::to_string(st.st_mtim.tv_sec) + ":" + std::to_string(st.st_mtim.tv_nsec) : "";
+        std::to_string(st.st_mtim.tv_sec) + ":" + std::to_string(st.st_mtim.tv_nsec) +
+        (arm_acceleration ? ":arm" : ":standard") : "";
+    const bool cache_hit = cached_model && !identity.empty() && identity == cached_key;
     if (!cached_model || identity.empty() || identity != cached_key) {
         release_model();
         llama_backend_init();
@@ -104,6 +124,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     }
     auto &model = cached_model;
     if (!model) { fail(env, "LOCAL_MODEL_LOAD_FAILED"); return nullptr; }
+    const auto loaded = Clock::now();
     if (cancelled) { fail(env, "LOCAL_CANCELLED"); return nullptr; }
     const auto count = env->GetArrayLength(jroles);
     if (count <= 0 || count != env->GetArrayLength(jcontents) || count > 8) { fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr; }
@@ -163,12 +184,15 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
             fail(env, cancelled ? "LOCAL_CANCELLED" : "LOCAL_DECODE_FAILED"); return nullptr;
         }
     }
+    const auto prompt_done = Clock::now();
     std::string output = qwen_reasoning ? "<think>\n" : "";
+    int generated_tokens = 0;
     for (int i = 0; i < max_new && !cancelled; ++i) {
         apply_work_limits(ctx.get(), current_threads);
         if (cancelled) break;
         auto token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
         if (llama_vocab_is_eog(vocab, token)) break;
+        ++generated_tokens;
         char buf[256];
         const int length = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, true);
         if (length < 0) { fail(env, "LOCAL_TOKEN_FAILED"); return nullptr; }
@@ -179,6 +203,8 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
         }
     }
     if (cancelled) { fail(env, "LOCAL_CANCELLED"); return nullptr; }
+    last_run_stats = {elapsed_ms(started, loaded), elapsed_ms(loaded, prompt_done),
+                      elapsed_ms(prompt_done, Clock::now()), generated_tokens, cache_hit ? 1 : 0};
     jbyteArray result = env->NewByteArray(output.size());
     if (result) env->SetByteArrayRegion(result, 0, output.size(), reinterpret_cast<const jbyte *>(output.data()));
     return result;

@@ -27,11 +27,14 @@ class LocalInferenceTest {
             assertTrue(answer.isNotBlank())
             answer
         }
+        val firstRun = LocalInference.lastRun.value
+        assertTrue("Inference timings and generated token count should be recorded", firstRun != null && firstRun.loadMs >= 0 && firstRun.promptMs >= 0 && firstRun.generationMs >= 0 && firstRun.tokens > 0)
         LocalPerformance.save(context, LocalPerformance.FAST)
         ParcelFileDescriptor.open(model, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
             val fastAnswer = withTimeout(120_000) { LocalInference.completeDescriptorForTest(context, fd, "Tell a story.", "Once upon a time") }
             assertEquals("Changing CPU profile should preserve this deterministic reply", coolAnswer, fastAnswer)
         }
+        assertTrue("Repeat request timings must show model cache reuse", LocalInference.lastRun.value?.cached == true)
         val cancelled = async {
             ParcelFileDescriptor.open(model, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
                 LocalInference.completeDescriptorForTest(context, fd, "Tell a story.", "Once upon a time", maxTokens = 1536)
