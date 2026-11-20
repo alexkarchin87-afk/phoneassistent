@@ -157,6 +157,17 @@ while time.time() < end:
     time.sleep(1)
 else: raise AssertionError('Root check did not finish or its result is off-screen: '+snapshot)
 for _ in range(8):
+    cool = next((e for e in tree().iter('node') if e.get('text') == 'Прохладнее'), None)
+    if cool is not None: break
+    adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
+    time.sleep(1)
+else:
+    raise AssertionError('Local performance profile not visible')
+tap(cool)
+profile_xml = adb('shell', 'run-as', PACKAGE, 'cat', 'shared_prefs/local_performance.xml')
+if 'COOL' not in profile_xml:
+    raise AssertionError('Local performance profile not persisted: '+profile_xml)
+for _ in range(8):
     if find('Скачать Qwen через Wi-Fi') is not None: break
     adb('shell', 'input', 'swipe', '500', '1600', '500', '450', '400')
     time.sleep(1)

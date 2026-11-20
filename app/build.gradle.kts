@@ -34,7 +34,7 @@ android {
     buildTypes {
         create("recovery") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".speed"
+            applicationIdSuffix = ".balanced"
             matchingFallbacks += listOf("debug")
         }
         release {

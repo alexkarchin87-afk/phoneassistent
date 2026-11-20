@@ -29,6 +29,7 @@ fun LocalModelSection() {
     val manager = remember { LocalModelManager(context) }
     var refresh by remember { mutableStateOf(0) }
     var status by remember { mutableStateOf("") }
+    var performance by remember { mutableStateOf(LocalPerformance.read(context)) }
     var verifying by remember { mutableStateOf(false) }
     val isLocal = remember(refresh) { manager.isLocal }
     val ready = remember(refresh) { manager.downloadedReady }
@@ -108,6 +109,13 @@ fun LocalModelSection() {
         }
     }
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Нагрузка локальной модели: ${performance.label}")
+        Text("Прохладнее — меньше потоков, возможен более долгий ответ. Быстрее — больше нагрузка. При нагреве система может попросить снизить нагрузку. Выбор применяется к следующему запросу. Параметры рассуждения не меняются; эффект зависит от телефона.")
+        LocalPerformance.entries.forEach { profile ->
+            OutlinedButton(onClick = { LocalPerformance.save(context, profile); performance = profile }) {
+                Text(if (profile == performance) "✓ ${profile.label}" else profile.label)
+            }
+        }
         Text(if (isLocal) "Сейчас: $selectedName" else "Сейчас: облачные модели")
         Text("Рекомендуемая Qwen 3.5 4B: 3,03 ГБ. Работает на телефоне и поддерживает быстрый и вдумчивый режимы. Скачать по Wi-Fi; нужно не менее 3,5 ГБ свободного места.")
         if (recommendedStatus.isNotBlank()) Text(recommendedStatus)

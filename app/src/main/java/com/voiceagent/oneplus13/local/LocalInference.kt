@@ -24,6 +24,7 @@ object LocalInference {
     private external fun nativeGenerate(path: String, key: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
+    private external fun nativeSetWorkLimits(threads: Int, delayMs: Int)
     private external fun nativeUnload()
     private external fun nativeModelLoadCount(): Int
     private external fun nativeHasCachedModel(): Boolean
@@ -43,11 +44,11 @@ object LocalInference {
         }
     }
 
-    suspend fun complete(path: String, system: String, history: List<ChatMessage>, text: String, maxTokens: Int = 384, thoughtful: Boolean = false): String =
-        completeInternal({ ModelHandle(path, "file:$path", null) }, system, history, text, maxTokens, thoughtful)
+    suspend fun complete(context: Context, path: String, system: String, history: List<ChatMessage>, text: String, maxTokens: Int = 384, thoughtful: Boolean = false): String =
+        completeInternal(context, { ModelHandle(path, "file:$path", null) }, system, history, text, maxTokens, thoughtful)
 
     suspend fun completeUri(context: Context, uri: Uri, system: String, history: List<ChatMessage>, text: String, thoughtful: Boolean = false): String =
-        completeInternal({
+        completeInternal(context, {
             val fd = context.contentResolver.openFileDescriptor(uri, "r") ?: error("LOCAL_FILE_UNAVAILABLE")
             try {
                 val magic = ByteArray(4)
@@ -58,14 +59,14 @@ object LocalInference {
             } catch (e: Exception) { fd.close(); throw e }
         }, system, history, text, if (thoughtful) 1536 else 384, thoughtful)
 
-    internal suspend fun completeDescriptorForTest(fd: ParcelFileDescriptor, system: String, text: String, thoughtful: Boolean = false, maxTokens: Int = 8): String =
-        completeInternal({ ModelHandle("", "test-fd", ParcelFileDescriptor.dup(fd.fileDescriptor)) }, system, emptyList(), text, maxTokens, thoughtful)
+    internal suspend fun completeDescriptorForTest(context: Context, fd: ParcelFileDescriptor, system: String, text: String, thoughtful: Boolean = false, maxTokens: Int = 8): String =
+        completeInternal(context, { ModelHandle("", "test-fd", ParcelFileDescriptor.dup(fd.fileDescriptor)) }, system, emptyList(), text, maxTokens, thoughtful)
 
     private data class ModelHandle(val path: String, val key: String, val fd: ParcelFileDescriptor?) : AutoCloseable {
         override fun close() { fd?.close() }
     }
 
-    private suspend fun completeInternal(open: () -> ModelHandle, system: String, history: List<ChatMessage>, text: String, maxTokens: Int, thoughtful: Boolean): String =
+    private suspend fun completeInternal(context: Context, open: () -> ModelHandle, system: String, history: List<ChatMessage>, text: String, maxTokens: Int, thoughtful: Boolean): String =
         suspendCancellableCoroutine { continuation ->
             if (text.length > 2500) {
                 continuation.resumeWithException(IllegalArgumentException("LOCAL_PROMPT_TOO_LONG"))
@@ -90,10 +91,10 @@ object LocalInference {
                     libraryLoaded.getOrThrow()
                     val effectiveSystem = if (thoughtful) "$system\n\nПроверяй вывод перед ответом, но сохраняй требуемый формат." else system
                     val chat = buildLocalMessages(effectiveSystem, history, text)
-                    val result = open().use { handle ->
+                    val result = ThermalMonitor(context) { limits -> nativeSetWorkLimits(limits.threads, limits.delayMs) }.use { _ -> open().use { handle ->
                         nativeGenerate(handle.path, handle.key, handle.fd?.fd ?: -1, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
                             chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens, thoughtful)
-                    }.toString(Charsets.UTF_8).trim()
+                    } }.toString(Charsets.UTF_8).trim()
                     val answer = stripReasoning(result)
                     if (answer.isEmpty()) error(if (thoughtful) "LOCAL_THINKING_INCOMPLETE" else "LOCAL_EMPTY_RESPONSE")
                     continuation.resume(answer)

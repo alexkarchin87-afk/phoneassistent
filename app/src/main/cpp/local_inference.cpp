@@ -12,6 +12,21 @@
 
 // Requests run on one Kotlin executor. Cancellation can arrive on another thread.
 static std::atomic<bool> cancelled{false};
+static std::atomic<int> work_threads{3};
+static std::atomic<int> work_delay_ms{0};
+static void apply_work_limits(llama_context *ctx, int &current_threads) {
+    const int requested = std::clamp(work_threads.load(), 1, 4);
+    if (requested != current_threads) {
+        llama_set_n_threads(ctx, requested, requested);
+        current_threads = requested;
+    }
+    int remaining = std::clamp(work_delay_ms.load(), 0, 250);
+    while (remaining > 0 && !cancelled.load()) {
+        const int chunk = std::min(remaining, 25);
+        usleep(chunk * 1000);
+        remaining -= chunk;
+    }
+}
 // Accessed only by the single Kotlin inference executor. Each request still gets
 // a fresh context and sampler, so conversation state cannot leak between calls.
 static std::unique_ptr<llama_model, decltype(&llama_model_free)> cached_model(nullptr, llama_model_free);
@@ -41,6 +56,11 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeCancel(JNIEnv *, jobject) { cancelled = true; }
 extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeReset(JNIEnv *, jobject) { cancelled = false; }
+extern "C" JNIEXPORT void JNICALL
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeSetWorkLimits(JNIEnv *, jobject, jint threads, jint delay_ms) {
+    work_threads = std::clamp(static_cast<int>(threads), 1, 4);
+    work_delay_ms = std::clamp(static_cast<int>(delay_ms), 0, 250);
+}
 extern "C" JNIEXPORT void JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeUnload(JNIEnv *, jobject) { release_model(); }
 extern "C" JNIEXPORT jint JNICALL
@@ -126,8 +146,8 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     cp.n_ctx = std::max(512, ((n + max_new + 255) / 256) * 256);
     cp.n_batch = 256;
     cp.n_ubatch = 128;
-    cp.n_threads = 4;
-    cp.n_threads_batch = 4;
+    cp.n_threads = std::clamp(work_threads.load(), 1, 4);
+    cp.n_threads_batch = cp.n_threads;
     cp.abort_callback = abort_decode;
     std::unique_ptr<llama_context, decltype(&llama_free)> ctx(llama_init_from_model(model.get(), cp), llama_free);
     if (!ctx) { fail(env, "LOCAL_CONTEXT_FAILED"); return nullptr; }
@@ -135,20 +155,25 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(llama_sampler_chain_init(sp), llama_sampler_free);
     if (!sampler) { fail(env, "LOCAL_SAMPLER_FAILED"); return nullptr; }
     llama_sampler_chain_add(sampler.get(), llama_sampler_init_greedy());
+    int current_threads = cp.n_threads;
     for (int pos = 0; pos < n; pos += 256) {
         const int count = std::min(256, n - pos);
+        apply_work_limits(ctx.get(), current_threads);
         if (cancelled || llama_decode(ctx.get(), llama_batch_get_one(tokens.data() + pos, count)) != 0) {
             fail(env, cancelled ? "LOCAL_CANCELLED" : "LOCAL_DECODE_FAILED"); return nullptr;
         }
     }
     std::string output = qwen_reasoning ? "<think>\n" : "";
     for (int i = 0; i < max_new && !cancelled; ++i) {
+        apply_work_limits(ctx.get(), current_threads);
+        if (cancelled) break;
         auto token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
         if (llama_vocab_is_eog(vocab, token)) break;
         char buf[256];
         const int length = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, true);
         if (length < 0) { fail(env, "LOCAL_TOKEN_FAILED"); return nullptr; }
         output.append(buf, length);
+        if (i + 1 == max_new) break; // No next token will be sampled from these logits.
         if (llama_decode(ctx.get(), llama_batch_get_one(&token, 1)) != 0) {
             fail(env, cancelled ? "LOCAL_CANCELLED" : "LOCAL_DECODE_FAILED"); return nullptr;
         }
