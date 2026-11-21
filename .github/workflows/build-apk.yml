@@ -164,4 +164,4 @@ jobs:
             adb shell rm /data/local/tmp/voiceagent-qwen35.gguf
             adb install -r local-tests/app-debug-androidTest.apk
             adb shell am instrument -w com.voiceagent.oneplus13.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.log
-            grep -F "OK (3 tests)" instrument.log || { adb logcat -d -v brief | tail -250; exit 1; }
+            grep -F "OK (4 tests)" instrument.log || { adb logcat -d -v brief | tail -250; exit 1; }

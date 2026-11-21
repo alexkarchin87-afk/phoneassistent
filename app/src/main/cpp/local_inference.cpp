@@ -87,7 +87,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeLastRunStats(JNIEnv *en
     return result;
 }
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jstring jkey, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful, jboolean arm_acceleration) {
+Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jstring jkey, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful, jboolean arm_acceleration, jint max_threads) {
     const auto started = Clock::now();
     if (!jpath || !jkey) { fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr; }
     const char *path = env->GetStringUTFChars(jpath, nullptr);
@@ -187,7 +187,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     cp.abort_callback = abort_decode;
     // ggml creates disposable workers for every graph without an attached pool.
     // Pool lifetime includes context teardown. Idle workers sleep between graphs.
-    auto pool_params = ggml_threadpool_params_default(std::clamp<long>(sysconf(_SC_NPROCESSORS_ONLN), 1, 4));
+    auto pool_params = ggml_threadpool_params_default(std::clamp(static_cast<int>(max_threads), 1, 4));
     pool_params.poll = 0;
     std::unique_ptr<ggml_threadpool, decltype(&ggml_threadpool_free)> pool(ggml_threadpool_new(&pool_params), ggml_threadpool_free);
     std::unique_ptr<llama_context, decltype(&llama_free)> ctx(llama_init_from_model(model.get(), cp), llama_free);

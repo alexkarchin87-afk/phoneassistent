@@ -119,19 +119,10 @@ class VoiceAgentService : Service() {
         startupGuard.setStage("Проверка библиотек речи")
         scope.launch(Dispatchers.IO) {
             try {
-                // StorageService creates Model on an unmanaged executor. Resolve native
-                // libraries here first so linkage errors cannot crash that thread.
                 Class.forName("org.vosk.LibVosk")
                 startupGuard.setStage("Загрузка модели речи")
-                withContext(Dispatchers.Main) {
-                    stt.ensureModel(
-                        onReady = { if (job.isActive) startListeningLoop() else stt.releaseModel() },
-                        onError = { error ->
-                            startupGuard.clear()
-                            scope.launch { AgentEventBus.publish(AgentEvent.Error("Не удалось загрузить модель распознавания речи.", error)) }
-                        }
-                    )
-                }
+                stt.ensureModel()
+                withContext(Dispatchers.Main) { startListeningLoop() }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: LinkageError) {

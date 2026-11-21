@@ -75,11 +75,11 @@ class NotificationReader : NotificationListenerService() {
             val source = sbn.packageName
             scope.launch {
                 if (!tokenCapture.onNotification(source, title, text, project) && !sensitive) {
-                    NotificationBuffer.record(NotificationEntry(source, title, text))
+                    NotificationBuffer.record(source)
                 }
             }
         } else if (!sensitive) {
-            NotificationBuffer.record(NotificationEntry(sbn.packageName, title, text))
+            NotificationBuffer.record(sbn.packageName)
         }
     }
 

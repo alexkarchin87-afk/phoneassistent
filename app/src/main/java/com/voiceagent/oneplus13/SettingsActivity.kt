@@ -179,17 +179,16 @@ fun SettingsScreen(
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val secrets = remember { SecretsStore(context) }
-
-    var deepSeekKey by remember { mutableStateOf(secrets.get(SecretsStore.KEY_DEEPSEEK_API_KEY).orEmpty()) }
-    var claudeKey by remember { mutableStateOf(secrets.get(SecretsStore.KEY_CLAUDE_API_KEY).orEmpty()) }
-    var telegramToken by remember { mutableStateOf(secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).orEmpty()) }
-    var maxToken by remember { mutableStateOf(secrets.get(SecretsStore.KEY_MAX_SERVICE_TOKEN).orEmpty()) }
-    var revealKeys by remember { mutableStateOf(false) }
-    var saved by remember { mutableStateOf(false) }
-    val botState by TelegramBotState.state.collectAsState()
-    val projectSecrets = remember { listProjectSecrets(context) }
-
+    var keySettings by remember { mutableStateOf<KeySettings?>(null) }
+    var keyReadError by remember { mutableStateOf(false) }
+    var keyAttempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(keyAttempt) {
+        keyReadError = false
+        try {
+            keySettings = withContext(Dispatchers.IO) { KeySettings(SecretsStore(context.applicationContext)) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { keyReadError = true }
+    }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         SettingsTopBar(title = "Ключи и диагностика", onBack = onBack)
 
@@ -206,101 +205,19 @@ fun SettingsScreen(
                     LocalModelSection()
                 }
 
-                    SettingsGroup(title = "Ключи ассистента", description = "Для облачных ответов нужен ключ DeepSeek API. Для локальной модели ключ не нужен.") {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            KeyField("DeepSeek API key", deepSeekKey, revealKeys) { deepSeekKey = it; saved = false }
-                            KeyField("Claude (Anthropic) API key", claudeKey, revealKeys) { claudeKey = it; saved = false }
-                            KeyField("Telegram-бот ассистента (токен)", telegramToken, revealKeys) { telegramToken = it; saved = false }
-                            KeyField("MAX service token", maxToken, revealKeys) { maxToken = it; saved = false }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Button(
-                                    onClick = {
-                                        secrets.put(SecretsStore.KEY_DEEPSEEK_API_KEY, deepSeekKey)
-                                        secrets.put(SecretsStore.KEY_CLAUDE_API_KEY, claudeKey)
-                                        val newToken = telegramToken.trim()
-                                        if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).orEmpty() != newToken) {
-                                            context.stopService(Intent(context, TelegramBotService::class.java))
-                                            secrets.remove(SecretsStore.KEY_TELEGRAM_OWNER_ID)
-                                            TelegramBotState.update { it.copy(running = false, status = "Токен изменён. Запусти Telegram и подтверди чат заново.", candidateId = null, candidateName = null, approvedId = null) }
-                                        }
-                                        telegramToken = newToken
-                                        secrets.put(SecretsStore.KEY_TELEGRAM_BOT_TOKEN, newToken)
-                                        secrets.put(SecretsStore.KEY_MAX_SERVICE_TOKEN, maxToken)
-                                        saved = true
-                                    },
-                                    shape = RoundedCornerShape(50)
-                                ) { Text(if (saved) "Сохранено" else "Сохранить") }
-                                Spacer(Modifier.size(12.dp))
-                                OutlinedButton(onClick = { revealKeys = !revealKeys }, shape = RoundedCornerShape(50)) {
-                                    Text(if (revealKeys) "Скрыть" else "Показать")
-                                }
-                            }
+                val loaded = keySettings
+                if (loaded != null) {
+                    CloudAndTelegramSettings(loaded)
+                } else {
+                    SettingsGroup(title = "Ключи ассистента") {
+                        if (keyReadError) {
+                            SettingsRow(icon = VaIcons.Key, title = "Хранилище ключей недоступно",
+                                subtitle = "Нажми, чтобы попробовать снова", onClick = { keyAttempt++ })
+                        } else {
+                            SettingsRow(icon = VaIcons.Key, title = "Открываю хранилище ключей…")
                         }
                     }
-
-                    SettingsGroup(
-                        title = "Telegram",
-                        description = "Сохрани токен бота, запусти Telegram, отправь боту /start и подтверди свой личный чат здесь. Для ответов используется выбранный мозг. Telegram требует интернет; управление телефоном из бота пока недоступно."
-                    ) {
-                        SettingsRow(
-                            icon = VaIcons.Info,
-                            title = "Состояние Telegram",
-                            subtitle = botState.status
-                        )
-                        SettingsDivider()
-                        SettingsRow(
-                            icon = VaIcons.Power,
-                            title = "Запустить Telegram",
-                            onClick = {
-                                if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).isNullOrBlank()) {
-                                    TelegramBotState.update { it.copy(status = "Сначала сохрани токен Telegram.") }
-                                } else {
-                                    runCatching {
-                                        ContextCompat.startForegroundService(context, Intent(context, TelegramBotService::class.java))
-                                    }.onFailure { TelegramBotState.update { it.copy(status = "Не удалось запустить сервис Telegram.") } }
-                                }
-                            },
-                            trailing = { ChevronTrailing() }
-                        )
-                        botState.candidateId?.let { candidateId ->
-                            SettingsDivider()
-                            SettingsRow(
-                                icon = VaIcons.Check,
-                                title = "Подтвердить личный чат",
-                                subtitle = "${botState.candidateName.orEmpty()} · ID $candidateId. Проверь, что это твой аккаунт, и нажми здесь.",
-                                onClick = {
-                                    if (TelegramBotState.state.value.candidateId == candidateId && TelegramBotState.state.value.running) {
-                                        secrets.put(SecretsStore.KEY_TELEGRAM_OWNER_ID, candidateId)
-                                        TelegramBotState.update { it.copy(approvedId = candidateId, candidateId = null, candidateName = null, status = "Чат подтверждён. Напиши боту /start.") }
-                                    }
-                                },
-                                trailing = { ChevronTrailing() }
-                            )
-                        }
-                        botState.approvedId?.let { approvedId ->
-                            SettingsDivider()
-                            SettingsRow(
-                                icon = VaIcons.Close,
-                                title = "Отключить привязанный чат",
-                                subtitle = "Подтверждён ID $approvedId",
-                                onClick = {
-                                    secrets.remove(SecretsStore.KEY_TELEGRAM_OWNER_ID)
-                                    TelegramBotState.update { it.copy(approvedId = null, candidateId = null, candidateName = null, status = "Привязка удалена. Для новой отправь боту /start.") }
-                                },
-                                trailing = { ChevronTrailing() }
-                            )
-                        }
-                        SettingsDivider()
-                        SettingsRow(
-                            icon = VaIcons.Power,
-                            title = "Остановить Telegram",
-                            onClick = {
-                                context.stopService(Intent(context, TelegramBotService::class.java))
-                                TelegramBotState.update { it.copy(running = false, status = "Остановлен", candidateId = null, candidateName = null) }
-                            },
-                            trailing = { ChevronTrailing() }
-                        )
-                    }
+                }
 
                     SettingsGroup(title = "Как отвечает Ваня") {
                         SettingsRow(
@@ -313,12 +230,14 @@ fun SettingsScreen(
                     }
 
                     SettingsGroup(title = "Токены для сгенерированных проектов") {
-                        if (projectSecrets.isEmpty()) {
+                        if (loaded == null) {
+                            SettingsRow(icon = VaIcons.Key, title = if (keyReadError) "Хранилище недоступно" else "Загрузка…")
+                        } else if (loaded.projectKeys.isEmpty()) {
                             SettingsRow(icon = VaIcons.Key, title = "Пока ничего не найдено")
                         } else {
-                            projectSecrets.forEachIndexed { index, (label, value) ->
+                            loaded.projectKeys.forEachIndexed { index, label ->
                                 if (index > 0) SettingsDivider()
-                                ProjectSecretRow(label, value, context)
+                                ProjectSecretRow(label, loaded.store, context)
                             }
                         }
                     }
@@ -561,13 +480,14 @@ private fun FeatureRequestsSection() {
 }
 
 @Composable
-private fun ProjectSecretRow(label: String, value: String, context: Context) {
+private fun ProjectSecretRow(label: String, store: SecretsStore, context: Context) {
     SettingsRow(
         icon = VaIcons.Key,
         title = label,
         subtitle = "Нажмите, чтобы скопировать",
         onClick = {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val value = store.get(label) ?: return@SettingsRow
             val clip = ClipData.newPlainText(label, value)
             if (android.os.Build.VERSION.SDK_INT >= 33) {
                 clip.description.extras = android.os.PersistableBundle().apply {
@@ -580,9 +500,118 @@ private fun ProjectSecretRow(label: String, value: String, context: Context) {
     )
 }
 
-/** SecretsStore doesn't expose key enumeration (EncryptedSharedPreferences discourages
- *  it), so project-secret keys are tracked separately here for display purposes. */
-private fun listProjectSecrets(context: Context): List<Pair<String, String>> {
-    val store = SecretsStore(context)
-    return store.projectSecretKeys().mapNotNull { key -> store.get(key)?.let { key to it } }
+private class KeySettings(val store: SecretsStore) {
+    val deepSeek = store.get(SecretsStore.KEY_DEEPSEEK_API_KEY).orEmpty()
+    val claude = store.get(SecretsStore.KEY_CLAUDE_API_KEY).orEmpty()
+    val telegram = store.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).orEmpty()
+    val max = store.get(SecretsStore.KEY_MAX_SERVICE_TOKEN).orEmpty()
+    val projectKeys = store.projectSecretKeys()
+}
+
+@Composable
+private fun CloudAndTelegramSettings(keys: KeySettings) {
+    val context = LocalContext.current
+    val secrets = keys.store
+    var deepSeekKey by remember(keys) { mutableStateOf(keys.deepSeek) }
+    var claudeKey by remember(keys) { mutableStateOf(keys.claude) }
+    var telegramToken by remember(keys) { mutableStateOf(keys.telegram) }
+    var maxToken by remember(keys) { mutableStateOf(keys.max) }
+    var revealKeys by remember { mutableStateOf(false) }
+    var saved by remember { mutableStateOf(false) }
+    val botState by TelegramBotState.state.collectAsState()
+    SettingsGroup(title = "Ключи ассистента", description = "Для облачных ответов нужен ключ DeepSeek API. Для локальной модели ключ не нужен.") {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            KeyField("DeepSeek API key", deepSeekKey, revealKeys) { deepSeekKey = it; saved = false }
+            KeyField("Claude (Anthropic) API key", claudeKey, revealKeys) { claudeKey = it; saved = false }
+            KeyField("Telegram-бот ассистента (токен)", telegramToken, revealKeys) { telegramToken = it; saved = false }
+            KeyField("MAX service token", maxToken, revealKeys) { maxToken = it; saved = false }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        secrets.put(SecretsStore.KEY_DEEPSEEK_API_KEY, deepSeekKey)
+                        secrets.put(SecretsStore.KEY_CLAUDE_API_KEY, claudeKey)
+                        val newToken = telegramToken.trim()
+                        if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).orEmpty() != newToken) {
+                            context.stopService(Intent(context, TelegramBotService::class.java))
+                            secrets.remove(SecretsStore.KEY_TELEGRAM_OWNER_ID)
+                            TelegramBotState.update { it.copy(running = false, status = "Токен изменён. Запусти Telegram и подтверди чат заново.", candidateId = null, candidateName = null, approvedId = null) }
+                        }
+                        telegramToken = newToken
+                        secrets.put(SecretsStore.KEY_TELEGRAM_BOT_TOKEN, newToken)
+                        secrets.put(SecretsStore.KEY_MAX_SERVICE_TOKEN, maxToken)
+                        saved = true
+                    },
+                    shape = RoundedCornerShape(50)
+                ) { Text(if (saved) "Сохранено" else "Сохранить") }
+                Spacer(Modifier.size(12.dp))
+                OutlinedButton(onClick = { revealKeys = !revealKeys }, shape = RoundedCornerShape(50)) {
+                    Text(if (revealKeys) "Скрыть" else "Показать")
+                }
+            }
+        }
+    }
+
+    SettingsGroup(
+        title = "Telegram",
+        description = "Сохрани токен бота, запусти Telegram, отправь боту /start и подтверди свой личный чат здесь. Для ответов используется выбранный мозг. Telegram требует интернет; управление телефоном из бота пока недоступно."
+    ) {
+        SettingsRow(
+            icon = VaIcons.Info,
+            title = "Состояние Telegram",
+            subtitle = botState.status
+        )
+        SettingsDivider()
+        SettingsRow(
+            icon = VaIcons.Power,
+            title = "Запустить Telegram",
+            onClick = {
+                if (secrets.get(SecretsStore.KEY_TELEGRAM_BOT_TOKEN).isNullOrBlank()) {
+                    TelegramBotState.update { it.copy(status = "Сначала сохрани токен Telegram.") }
+                } else {
+                    runCatching {
+                        ContextCompat.startForegroundService(context, Intent(context, TelegramBotService::class.java))
+                    }.onFailure { TelegramBotState.update { it.copy(status = "Не удалось запустить сервис Telegram.") } }
+                }
+            },
+            trailing = { ChevronTrailing() }
+        )
+        botState.candidateId?.let { candidateId ->
+            SettingsDivider()
+            SettingsRow(
+                icon = VaIcons.Check,
+                title = "Подтвердить личный чат",
+                subtitle = "${botState.candidateName.orEmpty()} · ID $candidateId. Проверь, что это твой аккаунт, и нажми здесь.",
+                onClick = {
+                    if (TelegramBotState.state.value.candidateId == candidateId && TelegramBotState.state.value.running) {
+                        secrets.put(SecretsStore.KEY_TELEGRAM_OWNER_ID, candidateId)
+                        TelegramBotState.update { it.copy(approvedId = candidateId, candidateId = null, candidateName = null, status = "Чат подтверждён. Напиши боту /start.") }
+                    }
+                },
+                trailing = { ChevronTrailing() }
+            )
+        }
+        botState.approvedId?.let { approvedId ->
+            SettingsDivider()
+            SettingsRow(
+                icon = VaIcons.Close,
+                title = "Отключить привязанный чат",
+                subtitle = "Подтверждён ID $approvedId",
+                onClick = {
+                    secrets.remove(SecretsStore.KEY_TELEGRAM_OWNER_ID)
+                    TelegramBotState.update { it.copy(approvedId = null, candidateId = null, candidateName = null, status = "Привязка удалена. Для новой отправь боту /start.") }
+                },
+                trailing = { ChevronTrailing() }
+            )
+        }
+        SettingsDivider()
+        SettingsRow(
+            icon = VaIcons.Power,
+            title = "Остановить Telegram",
+            onClick = {
+                context.stopService(Intent(context, TelegramBotService::class.java))
+                TelegramBotState.update { it.copy(running = false, status = "Остановлен", candidateId = null, candidateName = null) }
+            },
+            trailing = { ChevronTrailing() }
+        )
+    }
 }

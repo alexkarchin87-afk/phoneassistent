@@ -42,6 +42,7 @@ internal fun localWorkLimits(profile: LocalPerformance, thermalStatus: Int, cpuC
 internal class ThermalMonitor(context: Context, private val update: (LocalWorkLimits) -> Unit) : AutoCloseable {
     private val power = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
     private val profile = LocalPerformance.read(context)
+    val maxThreads = profile.threads.coerceAtMost(Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
     private val monitorLock = Any()
     private var live = true
     private val listener = if (Build.VERSION.SDK_INT >= 29) PowerManager.OnThermalStatusChangedListener { status ->

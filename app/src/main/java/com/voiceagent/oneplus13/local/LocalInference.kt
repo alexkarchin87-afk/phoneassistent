@@ -27,7 +27,7 @@ object LocalInference {
     private var active: Any? = null
     private val nativeLibrary = lazy { runCatching { System.loadLibrary("voiceagent_local") } }
     private val libraryLoaded by nativeLibrary
-    private external fun nativeGenerate(path: String, key: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean, armAcceleration: Boolean): ByteArray
+    private external fun nativeGenerate(path: String, key: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean, armAcceleration: Boolean, maxThreads: Int): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
     private external fun nativeSetWorkLimits(threads: Int, delayMs: Int)
@@ -100,9 +100,9 @@ object LocalInference {
                     val chat = buildLocalMessages(effectiveSystem, history, text)
                     val armEnabled = LocalPerformance.armEnabled(context)
                     val cpuStartMs = android.os.Process.getElapsedCpuTime()
-                    val result = ThermalMonitor(context) { limits -> nativeSetWorkLimits(limits.threads, limits.delayMs) }.use { _ -> open().use { handle ->
+                    val result = ThermalMonitor(context) { limits -> nativeSetWorkLimits(limits.threads, limits.delayMs) }.use { monitor -> open().use { handle ->
                         nativeGenerate(handle.path, handle.key, handle.fd?.fd ?: -1, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
-                            chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens, thoughtful, armEnabled)
+                            chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens, thoughtful, armEnabled, monitor.maxThreads)
                     } }.toString(Charsets.UTF_8).trim()
                     val stats = nativeLastRunStats()
                     if (stats.size == 5) mutableLastRun.value = RunStats(stats[0], stats[1], stats[2], stats[3], stats[4] != 0L, armEnabled, android.os.Process.getElapsedCpuTime() - cpuStartMs)

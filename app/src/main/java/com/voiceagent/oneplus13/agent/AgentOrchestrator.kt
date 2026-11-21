@@ -63,7 +63,7 @@ class AgentOrchestrator(
     private val userMemory = UserMemory(context)
     private val notesBuilder = NotesBuilder(llm)
     private val notesStorage = NotesStorage(context)
-    private val chatsDigest = ChatsDigest(context, llm)
+    private val chatsDigest = ChatsDigest(context)
     private val featureRequests = FeatureRequests(context)
     private val workflowStorage = WorkflowStorage(context)
     private val workflowRunner = WorkflowRunner(systemController, tts)
