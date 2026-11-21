@@ -34,7 +34,7 @@ android {
     buildTypes {
         create("recovery") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".audit2"
+            applicationIdSuffix = ".eco"
             matchingFallbacks += listOf("debug")
         }
         release {

@@ -114,18 +114,22 @@ class UserMemory(context: Context) {
      *  трогаем — по спецификации P1 неприкосновенен, а P2 заменяется только явно
      *  той же темой, а не выкидывается автоматически по объёму. */
     private fun enforceCapacity(facts: List<MemoryFact>): List<MemoryFact> {
-        fun wordsOf(list: List<MemoryFact>) = list.sumOf { it.text.split(Regex("\\s+")).filter { w -> w.isNotBlank() }.size }
+        val wordsByFact = mutableMapOf<MemoryFact, Int>()
+        var remainingWords = 0
+        for (fact in facts) {
+            val words = WORD_SEPARATOR.split(fact.text).count { it.isNotBlank() }
+            remainingWords += words
+            wordsByFact[fact] = (wordsByFact[fact] ?: 0) + words
+        }
+        if (remainingWords <= MAX_TOTAL_WORDS) return facts
 
-        var result = facts
-        if (wordsOf(result) <= MAX_TOTAL_WORDS) return result
-
-        val oldestP3First = result.filter { it.tier == MemoryTier.P3 }.sortedBy { it.timestampMillis }
+        val oldestP3First = facts.filter { it.tier == MemoryTier.P3 }.sortedBy { it.timestampMillis }
         val toDrop = mutableSetOf<MemoryFact>()
         for (fact in oldestP3First) {
-            if (wordsOf(result.filterNot { it in toDrop }) <= MAX_TOTAL_WORDS) break
-            toDrop.add(fact)
+            if (remainingWords <= MAX_TOTAL_WORDS) break
+            if (toDrop.add(fact)) remainingWords -= wordsByFact.getValue(fact)
         }
-        return result.filterNot { it in toDrop }
+        return facts.filterNot { it in toDrop }
     }
 
     private fun save(facts: List<MemoryFact>) {
@@ -145,6 +149,7 @@ class UserMemory(context: Context) {
         private const val KEY_FACTS = "facts_v2"
         private const val KEY_FACTS_LEGACY = "facts"
         private const val MAX_FACT_LENGTH = 200
+        private val WORD_SEPARATOR = Regex("\\s+")
         private const val MAX_TOTAL_WORDS = 200
     }
 }

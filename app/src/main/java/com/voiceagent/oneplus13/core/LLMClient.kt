@@ -70,21 +70,22 @@ class LLMClient(
     context: Context? = null,
     private val maxRetries: Int = 2
 ) {
-    private val secrets = context?.let { SecretsStore(it) }
+    private val secrets by lazy { context?.let { SecretsStore(it.applicationContext) } }
     private val responseMode = context?.let { ResponseMode(it) }
     private val local = context?.let { LocalModelManager(it) }
 
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
-    private val transport = RetryingHttpClient(http, maxRetries)
-
-    private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
-    private val deepSeekRequestAdapter = moshi.adapter(DeepSeekRequest::class.java)
-    private val deepSeekResponseAdapter = moshi.adapter(DeepSeekResponse::class.java)
-    private val claudeRequestAdapter = moshi.adapter(ClaudeRequest::class.java)
-    private val claudeResponseAdapter = moshi.adapter(ClaudeResponse::class.java)
+    private object Cloud {
+        val http = OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+        private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+        val deepSeekRequestAdapter = moshi.adapter(DeepSeekRequest::class.java)
+        val deepSeekResponseAdapter = moshi.adapter(DeepSeekResponse::class.java)
+        val claudeRequestAdapter = moshi.adapter(ClaudeRequest::class.java)
+        val claudeResponseAdapter = moshi.adapter(ClaudeResponse::class.java)
+    }
+    private val transport by lazy { RetryingHttpClient(Cloud.http, maxRetries) }
 
     /**
      * @param forceComplex — считать облачную задачу сложной (R1 + проверка Claude). Используется генерацией кода
@@ -141,7 +142,7 @@ class LLMClient(
                 return@withContext complete(systemPrompt, history, userText, forceComplex = true)
             }
 
-            val body = claudeRequestAdapter.toJson(
+            val body = Cloud.claudeRequestAdapter.toJson(
                 ClaudeRequest(
                     model = "claude-sonnet-5",
                     maxTokens = 8192,
@@ -158,7 +159,7 @@ class LLMClient(
                 .build()
 
             transport.execute(request) { json ->
-                claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
+                Cloud.claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
             }
         }
 
@@ -172,7 +173,7 @@ class LLMClient(
             addAll(history)
             add(ChatMessage("user", userText))
         }
-        val body = deepSeekRequestAdapter.toJson(DeepSeekRequest(model = model, messages = messages))
+        val body = Cloud.deepSeekRequestAdapter.toJson(DeepSeekRequest(model = model, messages = messages))
             .toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("https://api.deepseek.com/v1/chat/completions")
@@ -181,7 +182,7 @@ class LLMClient(
             .build()
 
         return transport.execute(request) { json ->
-            deepSeekResponseAdapter.fromJson(json)?.choices?.firstOrNull()?.message?.content
+            Cloud.deepSeekResponseAdapter.fromJson(json)?.choices?.firstOrNull()?.message?.content
         }
     }
 
@@ -203,7 +204,7 @@ class LLMClient(
         """.trimIndent()
 
         val reviewUserText = "Запрос пользователя: $userText\n\nЧерновой ответ на проверку:\n$draft"
-        val body = claudeRequestAdapter.toJson(
+        val body = Cloud.claudeRequestAdapter.toJson(
             ClaudeRequest(
                 model = "claude-sonnet-5",
                 maxTokens = 8192,
@@ -220,7 +221,7 @@ class LLMClient(
             .build()
 
         return transport.execute(request) { json ->
-            claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
+            Cloud.claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
         }
     }
 

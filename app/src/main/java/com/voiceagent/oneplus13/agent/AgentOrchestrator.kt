@@ -56,10 +56,10 @@ class AgentOrchestrator(
 ) {
     private val systemController = SystemController(context)
     private val lectureCommands = LectureCommands(context, llm, scope)
-    private val secrets = SecretsStore(context)
+    private val secrets by lazy { SecretsStore(context) }
     private val codeGenAgent = CodeGenAgent(llm)
     private val projectStorage = ProjectStorage(context)
-    private val tokenCapture = TokenCapture(secrets)
+    private val tokenCapture by lazy { TokenCapture(secrets) }
     private val userMemory = UserMemory(context)
     private val notesBuilder = NotesBuilder(llm)
     private val notesStorage = NotesStorage(context)

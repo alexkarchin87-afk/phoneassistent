@@ -38,11 +38,15 @@ class STTEngine(private val context: Context) {
         )
     }
 
-    /** Continuous partial+final recognition as a cold Flow; cancel the collector to stop listening. */
+    /** Delivers completed phrases while tracking speech-output overlap on each audio buffer. */
     fun listen(onStarted: () -> Unit = {}, acceptTranscript: () -> Boolean = { true }): Flow<String> = callbackFlow {
         val currentModel = synchronized(modelLock) { model }
             ?: throw IllegalStateException("Call ensureModel() first")
-        val recognizer = Recognizer(currentModel, 16000.0f)
+        val recognizer = object : Recognizer(currentModel, 16000.0f) {
+            // SpeechService still calls onPartialResult for the TTS gate. Nobody
+            // consumes the draft text, so skip Vosk's native best-path traversal.
+            override fun getPartialResult(): String = ""
+        }
         val service = try {
             SpeechService(recognizer, 16000.0f)
         } catch (error: Exception) {

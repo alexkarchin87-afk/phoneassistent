@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <llama.h>
+#include <ggml-cpu.h>
 #include <algorithm>
 #include <cstdio>
 #include <unistd.h>
@@ -169,14 +170,13 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
         prompt += qwen_reasoning ? "<think>\n" : "<think>\n\n</think>\n\n";
     }
     const auto *vocab = llama_model_get_vocab(model.get());
-    const int n = -llama_tokenize(vocab, prompt.data(), prompt.size(), nullptr, 0, true, true);
     constexpr int context_size = 8192;
     const int max_new = std::clamp(static_cast<int>(requested_tokens), 1, 1536);
-    if (n <= 0 || n > context_size - max_new) { fail(env, "LOCAL_PROMPT_TOO_LONG"); return nullptr; }
-    std::vector<llama_token> tokens(n);
-    if (llama_tokenize(vocab, prompt.data(), prompt.size(), tokens.data(), n, true, true) < 0) {
-        fail(env, "LOCAL_TOKENIZE_FAILED"); return nullptr;
-    }
+    const int prompt_budget = context_size - max_new;
+    // A single bounded tokenization pass. A negative result means it did not fit.
+    std::vector<llama_token> tokens(prompt_budget);
+    const int n = llama_tokenize(vocab, prompt.data(), prompt.size(), tokens.data(), prompt_budget, true, true);
+    if (n <= 0 || n > prompt_budget) { fail(env, "LOCAL_PROMPT_TOO_LONG"); return nullptr; }
     auto cp = llama_context_default_params();
     // Allocate only the context needed for this request, rounded to a batch.
     cp.n_ctx = std::max(512, ((n + max_new + 255) / 256) * 256);
@@ -185,8 +185,14 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     cp.n_threads = std::clamp(work_threads.load(), 1, 4);
     cp.n_threads_batch = cp.n_threads;
     cp.abort_callback = abort_decode;
+    // ggml creates disposable workers for every graph without an attached pool.
+    // Pool lifetime includes context teardown. Idle workers sleep between graphs.
+    auto pool_params = ggml_threadpool_params_default(std::clamp<long>(sysconf(_SC_NPROCESSORS_ONLN), 1, 4));
+    pool_params.poll = 0;
+    std::unique_ptr<ggml_threadpool, decltype(&ggml_threadpool_free)> pool(ggml_threadpool_new(&pool_params), ggml_threadpool_free);
     std::unique_ptr<llama_context, decltype(&llama_free)> ctx(llama_init_from_model(model.get(), cp), llama_free);
     if (!ctx) { fail(env, "LOCAL_CONTEXT_FAILED"); return nullptr; }
+    if (pool) llama_attach_threadpool(ctx.get(), pool.get(), nullptr);
     auto sp = llama_sampler_chain_default_params();
     std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(llama_sampler_chain_init(sp), llama_sampler_free);
     if (!sampler) { fail(env, "LOCAL_SAMPLER_FAILED"); return nullptr; }
@@ -202,13 +208,13 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     const auto prompt_done = Clock::now();
     std::string output = qwen_reasoning ? "<think>\n" : "";
     int generated_tokens = 0;
+    std::vector<char> piece(256);
     for (int i = 0; i < max_new && !cancelled; ++i) {
         apply_work_limits(ctx.get(), current_threads);
         if (cancelled) break;
         auto token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
         if (llama_vocab_is_eog(vocab, token)) break;
         ++generated_tokens;
-        std::vector<char> piece(256);
         int length = llama_token_to_piece(vocab, token, piece.data(), piece.size(), 0, true);
         if (length < 0) {
             if (length < -1048576) { fail(env, "LOCAL_TOKEN_FAILED"); return nullptr; }

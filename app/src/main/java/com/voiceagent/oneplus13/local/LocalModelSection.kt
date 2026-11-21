@@ -19,6 +19,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
@@ -28,6 +33,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun LocalModelSection() {
     val context = LocalContext.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val manager = remember { LocalModelManager(context) }
     var refresh by remember { mutableStateOf(0) }
     var status by remember { mutableStateOf("") }
@@ -64,10 +70,11 @@ fun LocalModelSection() {
     }
     val id = remember(refresh) { manager.downloadId }
 
-    LaunchedEffect(id) {
+    LaunchedEffect(id, lifecycle) {
         if (id == -1L) return@LaunchedEffect
         while (true) {
-            when (val state = manager.downloadStatus()) {
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            when (val state = withContext(Dispatchers.IO) { manager.downloadStatus() }) {
                 DownloadStatus.Idle -> break
                 is DownloadStatus.Downloading -> status = state.percent?.let { "Загрузка: $it%." }
                     ?: "Ожидание загрузки. Нужен Wi-Fi."
@@ -85,13 +92,14 @@ fun LocalModelSection() {
                     break
                 }
             }
-            delay(1200)
+            delay(3000)
         }
     }
-    LaunchedEffect(recommendedId) {
+    LaunchedEffect(recommendedId, lifecycle) {
         if (recommendedId == -1L) return@LaunchedEffect
         while (true) {
-            when (val state = manager.recommendedDownloadStatus()) {
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            when (val state = withContext(Dispatchers.IO) { manager.recommendedDownloadStatus() }) {
                 DownloadStatus.Idle -> break
                 is DownloadStatus.Downloading -> recommendedStatus = state.percent?.let { "Загрузка Qwen 3.5: $it%." } ?: "Ожидание Wi-Fi."
                 DownloadStatus.Failed -> { recommendedStatus = "Загрузка не удалась. Отмени её и попробуй снова."; break }
@@ -109,7 +117,7 @@ fun LocalModelSection() {
                     break
                 }
             }
-            delay(1200)
+            delay(3000)
         }
     }
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -129,6 +137,7 @@ fun LocalModelSection() {
         }
         lastRun?.let { run ->
             Text("Последний локальный запрос: загрузка ${run.loadMs / 1000.0} с; обработка запроса ${run.promptMs / 1000.0} с; генерация ${run.generationMs / 1000.0} с, токенов ${run.tokens}. ${if (run.cached) "Модель уже была загружена." else "Модель загружалась заново."} ${if (run.armEnabled) "Выбран режим ARM; поддержка операций зависит от модели и телефона." else "Обычный режим."}")
+            Text("Время CPU всего приложения за этот запрос — ${run.processCpuMs} мс. Несколько ядер могут работать одновременно.")
             Text("Токены включают скрытое рассуждение. Для сравнения используй одинаковый запрос, модель и режим; телефон и температура влияют на время.")
         }
         Text(if (isLocal) "Сейчас: $selectedName" else "Сейчас: облачные модели")

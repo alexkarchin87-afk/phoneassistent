@@ -17,7 +17,7 @@ import kotlin.coroutines.resumeWithException
 
 /** One CPU inference at a time, including callers from the bot and voice service. */
 object LocalInference {
-    data class RunStats(val loadMs: Long, val promptMs: Long, val generationMs: Long, val tokens: Long, val cached: Boolean, val armEnabled: Boolean)
+    data class RunStats(val loadMs: Long, val promptMs: Long, val generationMs: Long, val tokens: Long, val cached: Boolean, val armEnabled: Boolean, val processCpuMs: Long)
     private val mutableLastRun = MutableStateFlow<RunStats?>(null)
     val lastRun = mutableLastRun.asStateFlow()
     private val executor = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
@@ -25,7 +25,8 @@ object LocalInference {
     private var idleUnload: ScheduledFuture<*>? = null
     private val lock = Any()
     private var active: Any? = null
-    private val libraryLoaded = runCatching { System.loadLibrary("voiceagent_local") }
+    private val nativeLibrary = lazy { runCatching { System.loadLibrary("voiceagent_local") } }
+    private val libraryLoaded by nativeLibrary
     private external fun nativeGenerate(path: String, key: String, fd: Int, roles: Array<ByteArray>, messages: Array<ByteArray>, maxTokens: Int, thoughtful: Boolean, armAcceleration: Boolean): ByteArray
     private external fun nativeCancel()
     private external fun nativeReset()
@@ -42,7 +43,7 @@ object LocalInference {
 
     /** Release weights once any in-flight inference has completed. */
     fun releaseForMemoryPressure() {
-        if (libraryLoaded.isFailure) return
+        if (!nativeLibrary.isInitialized() || libraryLoaded.isFailure) return
         executor.execute {
             idleUnload?.cancel(false)
             idleUnload = null
@@ -80,7 +81,7 @@ object LocalInference {
             }
             val request = Any()
             continuation.invokeOnCancellation {
-                synchronized(lock) { if (active === request && libraryLoaded.isSuccess) nativeCancel() }
+                synchronized(lock) { if (active === request && nativeLibrary.isInitialized() && libraryLoaded.isSuccess) nativeCancel() }
             }
             executor.execute {
                 val run = synchronized(lock) {
@@ -98,17 +99,18 @@ object LocalInference {
                     val effectiveSystem = if (thoughtful) "$system\n\nПроверяй вывод перед ответом, но сохраняй требуемый формат." else system
                     val chat = buildLocalMessages(effectiveSystem, history, text)
                     val armEnabled = LocalPerformance.armEnabled(context)
+                    val cpuStartMs = android.os.Process.getElapsedCpuTime()
                     val result = ThermalMonitor(context) { limits -> nativeSetWorkLimits(limits.threads, limits.delayMs) }.use { _ -> open().use { handle ->
                         nativeGenerate(handle.path, handle.key, handle.fd?.fd ?: -1, chat.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
                             chat.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(), maxTokens, thoughtful, armEnabled)
                     } }.toString(Charsets.UTF_8).trim()
                     val stats = nativeLastRunStats()
-                    if (stats.size == 5) mutableLastRun.value = RunStats(stats[0], stats[1], stats[2], stats[3], stats[4] != 0L, armEnabled)
+                    if (stats.size == 5) mutableLastRun.value = RunStats(stats[0], stats[1], stats[2], stats[3], stats[4] != 0L, armEnabled, android.os.Process.getElapsedCpuTime() - cpuStartMs)
                     val answer = stripReasoning(result)
                     if (answer.isEmpty()) error(if (thoughtful) "LOCAL_THINKING_INCOMPLETE" else "LOCAL_EMPTY_RESPONSE")
-                    continuation.resume(answer)
+                    if (continuation.isActive) continuation.resume(answer)
                 } catch (e: Throwable) {
-                    continuation.resumeWithException(e)
+                    if (continuation.isActive) continuation.resumeWithException(e)
                 } finally {
                     synchronized(lock) { if (active === request) active = null }
                     if (libraryLoaded.isSuccess) idleUnload = executor.schedule({ nativeUnload() }, 45, TimeUnit.SECONDS)

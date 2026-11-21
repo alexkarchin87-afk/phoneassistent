@@ -29,16 +29,10 @@ import kotlinx.coroutines.launch
 class NotificationReader : NotificationListenerService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private lateinit var tokenCapture: TokenCapture
+    private val tokenCapture by lazy { TokenCapture(SecretsStore(applicationContext)) }
 
-    /** Последнее уведомление с доступным быстрым ответом на отправителя (ключ —
-     *  заголовок уведомления в нижнем регистре, обычно это имя собеседника). */
-    private val replyableBySender = java.util.concurrent.ConcurrentHashMap<String, StatusBarNotification>()
-
-    override fun onCreate() {
-        super.onCreate()
-        tokenCapture = TokenCapture(SecretsStore(applicationContext))
-    }
+    private data class ReplyTarget(val title: String, val action: android.app.Notification.Action)
+    private val replyableBySender = java.util.concurrent.ConcurrentHashMap<String, ReplyTarget>()
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -59,33 +53,33 @@ class NotificationReader : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (sbn.packageName !in REPLY_PACKAGES) return
+        // An updated notification may have lost its reply action or become sensitive.
+        replyableBySender.remove(sbn.key)
         val extras = sbn.notification.extras
         val title = extras.getCharSequence("android.title")?.toString().orEmpty()
         val text = extras.getCharSequence("android.text")?.toString().orEmpty()
         if (title.isBlank() && text.isBlank()) return
 
-        if (sbn.packageName in REPLY_PACKAGES && !SENSITIVE.containsMatchIn("$title $text")
-            && findReplyAction(sbn) != null) {
-            replyableBySender[sbn.key] = sbn
-            if (replyableBySender.size > 100) replyableBySender.keys.firstOrNull()?.let { replyableBySender.remove(it) }
+        val project = PendingProject.awaitingTokenFor
+        val tokenCandidate = project != null && TokenCapture.isCandidate(sbn.packageName, title)
+        val sensitive = SENSITIVE.containsMatchIn("$title $text")
+        if (!sensitive) {
+            findReplyAction(sbn)?.let { action ->
+                replyableBySender[sbn.key] = ReplyTarget(title.trim(), action)
+                if (replyableBySender.size > 100) replyableBySender.keys.firstOrNull()?.let { replyableBySender.remove(it) }
+            }
         }
 
-        scope.launch {
-            val handledAsToken = tokenCapture.onNotification(
-                packageName = sbn.packageName,
-                title = title,
-                text = text,
-                forProjectName = PendingProject.awaitingTokenFor
-            )
-            if (handledAsToken) return@launch
-
-            // Never retain or broadcast notifications from arbitrary apps, including
-            // banks and SMS; never retain obvious codes or authentication messages.
-            if (sbn.packageName !in REPLY_PACKAGES ||
-                SENSITIVE.containsMatchIn("$title $text")) return@launch
-
+        if (tokenCandidate) {
+            val source = sbn.packageName
+            scope.launch {
+                if (!tokenCapture.onNotification(source, title, text, project) && !sensitive) {
+                    NotificationBuffer.record(NotificationEntry(source, title, text))
+                }
+            }
+        } else if (!sensitive) {
             NotificationBuffer.record(NotificationEntry(sbn.packageName, title, text))
-
         }
     }
 
@@ -105,10 +99,10 @@ class NotificationReader : NotificationListenerService() {
         if (q.isBlank()) return false
         // A single exact match from a known messenger is required; ambiguity fails closed.
         val entry = replyableBySender.entries.filter {
-            it.value.notification.extras.getCharSequence("android.title")?.toString()?.trim()?.lowercase() == q
+            it.value.title.equals(q, ignoreCase = true)
         }.singleOrNull() ?: return false
-        val sbn = entry.value
-        val action = findReplyAction(sbn) ?: return false
+        val target = entry.value
+        val action = target.action
         val remoteInputs = action.remoteInputs ?: return false
 
         val intent = Intent()
@@ -118,7 +112,7 @@ class NotificationReader : NotificationListenerService() {
 
         return try {
             action.actionIntent.send(applicationContext, 0, intent)
-            replyableBySender.remove(entry.key)
+            replyableBySender.remove(entry.key, target)
             true
         } catch (_: PendingIntent.CanceledException) {
             false
