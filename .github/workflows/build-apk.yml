@@ -59,6 +59,9 @@ jobs:
       - name: Assemble debug APK
         run: gradle assembleDebug --stacktrace
 
+      - name: Verify minified release build
+        run: gradle assembleRelease --stacktrace
+
       - name: Assemble local inference instrumentation tests
         run: gradle assembleDebugAndroidTest --stacktrace
 
