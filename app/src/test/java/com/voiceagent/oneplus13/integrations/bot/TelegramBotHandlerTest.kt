@@ -60,4 +60,21 @@ class TelegramBotHandlerTest {
         handler.handle(msg("42", "привет"))
         assertTrue(sent.isEmpty())
     }
+
+    @Test fun failedDeliveryDoesNotPolluteHistoryForRetry() = runBlocking {
+        var failSend = true
+        val historyLengths = mutableListOf<Int>()
+        val handler = TelegramBotHandler(
+            ownerId = { "42" }, onCandidate = { _, _ -> },
+            send = { _, _ -> !failSend },
+            answer = { history, _ -> historyLengths.add(history.size); "answer" },
+            errorMessage = { "error" }
+        )
+        try { handler.handle(msg("42", "question")); fail("Expected delivery error") }
+        catch (_: java.io.IOException) {}
+        failSend = false
+        handler.handle(msg("42", "question"))
+        handler.handle(msg("42", "next"))
+        assertEquals(listOf(0, 0, 2), historyLengths)
+    }
 }

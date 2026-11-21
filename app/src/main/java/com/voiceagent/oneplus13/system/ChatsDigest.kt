@@ -12,18 +12,21 @@ class ChatsDigest(private val context: Context, private val llm: LLMClient) {
         val entries = NotificationBuffer.entriesSince(lastDigestAtMillis)
             .filter { it.packageName in ALLOWED_PACKAGES }
             .filterNot { SENSITIVE.containsMatchIn(it.title + " " + it.text) }
-            .takeLast(4)
-        lastDigestAtMillis = now
-        if (entries.isEmpty()) return "Новых доступных уведомлений нет."
+        if (entries.isEmpty()) {
+            lastDigestAtMillis = now
+            return "Новых доступных уведомлений нет."
+        }
         // Announce only the source and count. Message bodies may contain private data.
         val counts = entries.groupingBy { it.packageName }.eachCount()
-        return counts.entries.joinToString(". ") { (pkg, count) ->
+        val digest = counts.entries.joinToString(". ") { (pkg, count) ->
             val name = runCatching {
                 val pm = context.packageManager
                 pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
             }.getOrDefault(pkg)
             "$name: уведомлений $count"
         }
+        lastDigestAtMillis = now
+        return digest
     }
 
     companion object {

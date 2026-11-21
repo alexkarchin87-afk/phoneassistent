@@ -36,12 +36,9 @@ internal class TelegramBotHandler(
             requireSend(owner, "Сообщение слишком длинное. Отправь до 4000 символов.")
             return
         }
+        var generated = false
         val reply = try {
-            answer(history.toList(), message.text).also {
-                history.addLast(ChatMessage("user", message.text))
-                history.addLast(ChatMessage("assistant", it))
-                while (history.size > 12) history.removeFirst()
-            }
+            answer(history.toList(), message.text).also { generated = true }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -50,6 +47,11 @@ internal class TelegramBotHandler(
         if (ownerId() != owner) { history.clear(); historyOwner = null; return }
         // Telegram limits each message to 4096 characters; keep a little margin.
         reply.ifBlank { "Не получил ответа от модели." }.chunked(3500).forEach { requireSend(owner, it) }
+        if (generated) {
+            history.addLast(ChatMessage("user", message.text))
+            history.addLast(ChatMessage("assistant", reply))
+            while (history.size > 12) history.removeFirst()
+        }
     }
 
     private suspend fun requireSend(chatId: String, text: String) {
