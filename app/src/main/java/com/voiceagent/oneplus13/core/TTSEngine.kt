@@ -26,20 +26,24 @@ class TTSEngine(
     @Volatile private var speaking = false
     @Volatile private var suppressUntil = 0L
     private val speechMutex = Mutex()
+    private val lifecycleLock = Any()
+    private var finishActiveSpeech: (() -> Unit)? = null
     private lateinit var tts: TextToSpeech
     init {
         tts = TextToSpeech(context.applicationContext) { status ->
             // Post so the field assignment completes before the callback reads it.
             Handler(Looper.getMainLooper()).post {
-                if (closed || status != TextToSpeech.SUCCESS) {
-                    initialized.complete(false)
-                } else {
-                    try {
-                        tts.language = Locale("ru", "RU")
-                        initialized.complete(true)
-                    } catch (error: RuntimeException) {
-                        android.util.Log.e("TTSEngine", "Text-to-speech initialization failed", error)
+                synchronized(lifecycleLock) {
+                    if (closed || status != TextToSpeech.SUCCESS) {
                         initialized.complete(false)
+                    } else {
+                        try {
+                            tts.language = Locale("ru", "RU")
+                            initialized.complete(true)
+                        } catch (error: RuntimeException) {
+                            android.util.Log.e("TTSEngine", "Text-to-speech initialization failed", error)
+                            initialized.complete(false)
+                        }
                     }
                 }
             }
@@ -62,22 +66,42 @@ class TTSEngine(
                     fun finish() {
                         if (completed.compareAndSet(false, true) && cont.isActive) cont.resume(Unit)
                     }
-                    tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) {}
-                        override fun onDone(utteranceId: String?) { if (utteranceId == id) finish() }
-                        @Deprecated("Deprecated in Java")
-                        override fun onError(utteranceId: String?) { if (utteranceId == id) finish() }
-                    })
-                    cont.invokeOnCancellation { completed.set(true); tts.stop() }
-                    if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) finish()
+                    cont.invokeOnCancellation {
+                        completed.set(true)
+                        synchronized(lifecycleLock) { if (!closed) tts.stop() }
+                    }
+                    synchronized(lifecycleLock) {
+                        if (closed || !cont.isActive) {
+                            finish()
+                        } else {
+                            finishActiveSpeech = ::finish
+                            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                                override fun onStart(utteranceId: String?) {}
+                                override fun onDone(utteranceId: String?) { if (utteranceId == id) finish() }
+                                @Deprecated("Deprecated in Java")
+                                override fun onError(utteranceId: String?) { if (utteranceId == id) finish() }
+                            })
+                            if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) finish()
+                        }
+                    }
                 }
             }
         } finally {
+            synchronized(lifecycleLock) { finishActiveSpeech = null }
             suppressUntil = SystemClock.elapsedRealtime() + 1_200L
             speaking = false
             onSpeechStateChanged(false)
         }
     }
 
-    fun shutdown() { closed = true; initialized.complete(false); tts.stop(); tts.shutdown() }
+    fun shutdown() = synchronized(lifecycleLock) {
+        if (!closed) {
+            closed = true
+            initialized.complete(false)
+            tts.stop()
+            tts.shutdown()
+            finishActiveSpeech?.invoke()
+            finishActiveSpeech = null
+        }
+    }
 }

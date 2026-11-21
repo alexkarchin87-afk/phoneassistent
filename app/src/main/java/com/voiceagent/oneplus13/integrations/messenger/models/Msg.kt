@@ -13,5 +13,6 @@ data class Msg(
     val senderName: String,
     val text: String,
     val timestampMillis: Long = System.currentTimeMillis(),
-    val isPrivateUserChat: Boolean = false
+    val isPrivateUserChat: Boolean = false,
+    val telegramUpdateId: Long? = null
 )

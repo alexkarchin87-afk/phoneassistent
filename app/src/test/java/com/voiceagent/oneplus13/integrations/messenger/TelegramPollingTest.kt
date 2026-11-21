@@ -49,4 +49,32 @@ class TelegramPollingTest {
         try { poller.run() } catch (_: CancellationException) {}
         assertEquals(listOf(0L, 0L), offsets)
     }
+
+    @Test fun persistsEachSuccessfulMessageBeforeLaterFailureAndRestart() = runBlocking {
+        var saved = 10L
+        val observed = mutableListOf<Long>()
+        val first = Msg(MessengerPlatform.TELEGRAM, "1", "A", "first", telegramUpdateId = 10)
+        val second = Msg(MessengerPlatform.TELEGRAM, "1", "A", "second", telegramUpdateId = 11)
+        var calls = 0
+        val poller = TelegramPolling(
+            poll = { offset ->
+                observed.add(offset)
+                if (++calls == 1) 13L to listOf(first, second)
+                else throw CancellationException("restart")
+            },
+            publish = { if (it.text == "second") throw IOException("send failed") },
+            pause = {}, loadOffset = { saved }, saveOffset = { saved = it }
+        )
+        try { poller.run() } catch (_: CancellationException) {}
+        assertEquals(11L, saved)
+        assertEquals(listOf(10L, 11L), observed)
+
+        val restartOffsets = mutableListOf<Long>()
+        val restarted = TelegramPolling(
+            poll = { offset -> restartOffsets.add(offset); throw CancellationException("done") },
+            publish = {}, loadOffset = { saved }, saveOffset = { saved = it }
+        )
+        try { restarted.run() } catch (_: CancellationException) {}
+        assertEquals(listOf(11L), restartOffsets)
+    }
 }

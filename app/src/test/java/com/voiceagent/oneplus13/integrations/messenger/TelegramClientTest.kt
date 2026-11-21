@@ -15,6 +15,8 @@ class TelegramClientTest {
             server.enqueue(MockResponse().setBody("""{"ok":true,"result":[{"update_id":10,"message":{"text":"/start","chat":{"id":42,"type":"private"},"from":{"id":42,"is_bot":false,"first_name":"Alice"}}},{"update_id":11,"message":{"text":"hello","chat":{"id":-1,"type":"group"},"from":{"id":42,"is_bot":false}}}]}"""))
             val (offset, messages) = client.pollUpdates(0)
             assertEquals(12L, offset)
+            assertEquals(10L, messages[0].telegramUpdateId)
+            assertEquals(11L, messages[1].telegramUpdateId)
             assertTrue(messages[0].isPrivateUserChat)
             assertFalse(messages[1].isPrivateUserChat)
             server.enqueue(MockResponse().setBody("""{"ok":true,"result":{}}"""))

@@ -41,6 +41,16 @@ object CrashLogger {
 
     fun hasAnyCrash(context: Context): Boolean = latestCrashFile(context) != null
 
+    /** Old logs may predate redaction. Always prepare a scrubbed copy before sharing. */
+    fun crashFileForSharing(context: Context): File? {
+        val source = latestCrashFile(context) ?: return null
+        return runCatching {
+            File(context.cacheDir, "voiceagent_crash_share.txt").apply {
+                writeText(redactSecrets(source.readText()))
+            }
+        }.getOrNull()
+    }
+
     private fun writeCrashFile(context: Context, thread: Thread, throwable: Throwable) {
         val dir = crashDir(context).apply { mkdirs() }
 
@@ -54,7 +64,7 @@ object CrashLogger {
                 appendLine("Устройство: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
                 appendLine("Поток: ${thread.name}")
                 appendLine()
-                append(stackTrace)
+                append(redactSecrets(stackTrace))
             }
         )
 
@@ -68,3 +78,9 @@ object CrashLogger {
 
     private fun crashDir(context: Context): File = File(context.filesDir, "crashes")
 }
+
+/** Redacts known credential shapes while retaining paths and exception details. */
+internal fun redactSecrets(text: String): String = text
+    .replace(Regex("(?i)(bot)([0-9]{6,15}):([a-z0-9_-]{20,})"), "$1[REDACTED]")
+    .replace(Regex("(?i)([?&](?:access_token|api_key|token)=)[^&#\\s]+"), "$1[REDACTED]")
+    .replace(Regex("(?i)(bearer\\s+)[a-z0-9._~+/-]+=*"), "$1[REDACTED]")

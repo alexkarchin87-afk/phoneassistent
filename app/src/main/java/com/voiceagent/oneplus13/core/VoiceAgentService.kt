@@ -192,24 +192,39 @@ class VoiceAgentService : Service() {
                 }
                 if (route == TranscriptRoute.COMMAND) {
                     val cleaned = stripWakeWord(transcript)
-                    if (cleaned.isNotBlank() && commandBusy.compareAndSet(false, true)) {
-                        conversationActiveUntil = SystemClock.elapsedRealtime() + CONVERSATION_WINDOW_MS
-                        AgentEventBus.publish(AgentEvent.Heard(cleaned))
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                agent.handleTranscript(cleaned)
-                            } finally {
-                                conversationActiveUntil = SystemClock.elapsedRealtime() + CONVERSATION_WINDOW_MS
-                                commandBusy.set(false)
-                            }
-                        }
-                    }
+                    if (cleaned.isNotBlank()) submitCommand(cleaned, voice = true)
                 }
             }
         }
     }
 
     private fun isConversationActive(): Boolean = SystemClock.elapsedRealtime() < conversationActiveUntil
+
+    private fun submitCommand(text: String, voice: Boolean = false) {
+        if (text.isBlank()) return
+        if (!::orchestrator.isInitialized || initFailed) {
+            scope.launch { AgentEventBus.publish(AgentEvent.Error("Агент ещё не готов. Попробуй снова.")) }
+            return
+        }
+        if (!commandBusy.compareAndSet(false, true)) {
+            if (!voice) scope.launch { AgentEventBus.publish(AgentEvent.Error("Ваня ещё отвечает. Подожди и отправь сообщение снова.")) }
+            return
+        }
+        conversationActiveUntil = SystemClock.elapsedRealtime() + CONVERSATION_WINDOW_MS
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (voice) AgentEventBus.publish(AgentEvent.Heard(text))
+                orchestrator.await().handleTranscript(text)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AgentEventBus.publish(AgentEvent.Error("Не удалось обработать сообщение. Попробуй ещё раз.", error))
+            } finally {
+                conversationActiveUntil = SystemClock.elapsedRealtime() + CONVERSATION_WINDOW_MS
+                commandBusy.set(false)
+            }
+        }
+    }
 
     private fun containsWakeWord(text: String): Boolean =
         WakeWord.contains(text)
@@ -249,7 +264,7 @@ class VoiceAgentService : Service() {
         overlay = OverlayBubbleController(
             context = applicationContext,
             scope = scope,
-            onSendText = { text -> scope.launch(Dispatchers.IO) { orchestrator.await().handleTranscript(text) } },
+            onSendText = { text -> submitCommand(text) },
             alwaysVisible = { uiPrefs.overlayAlwaysVisible }
         ).also {
             // По умолчанию пузырь появляется только по будильному слову
@@ -271,7 +286,7 @@ class VoiceAgentService : Service() {
      */
     inner class LocalBinder : Binder() {
         fun sendText(text: String) {
-            scope.launch(Dispatchers.IO) { orchestrator.await().handleTranscript(text) }
+            submitCommand(text)
         }
 
         fun setOverlayEnabled(enabled: Boolean) = this@VoiceAgentService.setOverlayEnabled(enabled)

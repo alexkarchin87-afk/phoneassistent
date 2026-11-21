@@ -153,7 +153,7 @@ class SettingsActivity : ComponentActivity() {
                         onImportBackupClick = { importLauncher.launch("application/json") },
                         hasCrashLog = CrashLogger.hasAnyCrash(this),
                         onShareCrashLog = {
-                            val file = CrashLogger.latestCrashFile(this) ?: return@SettingsScreen
+                            val file = CrashLogger.crashFileForSharing(this) ?: return@SettingsScreen
                             val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
                             val intent = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"

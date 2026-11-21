@@ -12,8 +12,14 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.URL
-import java.net.HttpURLConnection
+import okhttp3.Dns
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.net.InetAddress
+import java.net.Proxy
+import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
 
 /**
  * Facade over device-level actions the agent can take: launching apps, adjusting
@@ -171,19 +177,44 @@ class SystemController(private val context: Context) {
         val dir = File(context.getExternalFilesDir(null) ?: throw java.io.IOException("No storage"), "downloads")
         if (!dir.exists() && !dir.mkdirs()) throw java.io.IOException("Cannot create download directory")
         val file = File(dir, "download_${System.currentTimeMillis()}.apk")
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 30_000
-            instanceFollowRedirects = true
+        // Check each DNS result at connection time and every redirect; do not let a
+        // model-supplied URL address local services or an HTTPS-to-HTTP redirect.
+        val dns = Dns { hostname ->
+            Dns.SYSTEM.lookup(hostname).also { addresses ->
+                if (addresses.isEmpty() || addresses.any { !isPublicDownloadAddress(it) })
+                    throw UnknownHostException("Local download address is not allowed")
+            }
         }
+        val client = OkHttpClient.Builder().dns(dns).proxy(Proxy.NO_PROXY)
+            .followRedirects(false).followSslRedirects(false)
+            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
         try {
-            connection.connect()
-            if (connection.url.protocol != "https" || connection.responseCode !in 200..299)
-                throw java.io.IOException("Download failed")
+            // Only clean our own old downloads, long after the installer may have opened them.
+            dir.listFiles()?.filter { it.name.matches(Regex("download_[0-9]+\\.apk")) &&
+                it.lastModified() < System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 }?.forEach { it.delete() }
+            var currentUrl = url.toHttpUrl()
+            var redirects = 0
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                if (currentUrl.scheme != "https") throw java.io.IOException("HTTPS required")
+                val host = currentUrl.host
+                if ((host.contains(':') || host.all { it.isDigit() || it == '.' }) &&
+                    !isPublicDownloadAddress(InetAddress.getByName(host))) throw java.io.IOException("Local address")
+                val response = client.newCall(Request.Builder().url(currentUrl).get().build()).execute()
+                if (response.code in 300..399) {
+                    val location = response.header("Location")
+                    response.close()
+                    if (++redirects > 5 || location == null) throw java.io.IOException("Invalid redirect")
+                    currentUrl = currentUrl.resolve(location) ?: throw java.io.IOException("Invalid redirect")
+                    continue
+                }
+                response.use {
+                    if (!it.isSuccessful) throw java.io.IOException("Download failed")
+                    val body = it.body ?: throw java.io.IOException("Empty download")
             val maxBytes = 250L * 1024 * 1024
-            if (connection.contentLengthLong > maxBytes) throw java.io.IOException("Download too large")
+                    if (body.contentLength() > maxBytes) throw java.io.IOException("Download too large")
             var total = 0L
-            connection.inputStream.use { input -> file.outputStream().use { output ->
+                    body.byteStream().use { input -> file.outputStream().use { output ->
                 val buffer = ByteArray(32 * 1024)
                 while (true) {
                     currentCoroutineContext().ensureActive()
@@ -194,11 +225,20 @@ class SystemController(private val context: Context) {
                     output.write(buffer, 0, count)
                 }
             } }
+                    // APK is a ZIP archive. Check signature without trusting Content-Type.
+                    val signature = file.inputStream().use { stream -> ByteArray(4).also { bytes ->
+                        if (stream.read(bytes) != 4) throw java.io.IOException("Invalid APK")
+                    } }
+                    if (!signature.contentEquals(byteArrayOf(0x50, 0x4b, 0x03, 0x04)))
+                        throw java.io.IOException("Invalid APK")
+                }
+                break
+            }
             file
         } catch (error: Exception) {
             file.delete()
             throw error
-        } finally { connection.disconnect() }
+        } finally { client.connectionPool.evictAll() }
     }
 
     private fun promptInstall(apkFile: File) {

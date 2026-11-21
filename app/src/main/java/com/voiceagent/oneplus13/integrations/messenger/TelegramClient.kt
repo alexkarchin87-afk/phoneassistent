@@ -28,10 +28,22 @@ class TelegramClient(context: Context? = null, botToken: String? = null, private
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS) // long-poll friendly
+        .readTimeout(55, TimeUnit.SECONDS) // 30 seconds of polling plus network latency
         .build()
 
     private val base = "$apiBase/bot${this.botToken.trim()}"
+
+    // A bot's offset must not be reused after the user selects another token.
+    private val offsetKey = "offset_" + java.security.MessageDigest.getInstance("SHA-256")
+        .digest(this.botToken.trim().toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    private val offsetPrefs = context?.applicationContext?.getSharedPreferences("telegram_polling", Context.MODE_PRIVATE)
+    internal fun savedOffset(): Long = offsetPrefs?.getLong(offsetKey, 0L) ?: 0L
+    internal fun saveOffset(offset: Long) {
+        if (offsetPrefs != null && !offsetPrefs.edit().putLong(offsetKey, offset).commit()) {
+            throw java.io.IOException("Cannot save Telegram polling position")
+        }
+    }
 
     suspend fun botUsername(): String {
         val request = Request.Builder().url("$base/getMe").get().build()
@@ -83,7 +95,8 @@ class TelegramClient(context: Context? = null, botToken: String? = null, private
                     text = text,
                     isPrivateUserChat = chat != null && from != null && chat.optString("type") == "private" &&
                         chat.optString("id").isNotBlank() && chat.optString("id") == from.optString("id") &&
-                        !from.optBoolean("is_bot")
+                        !from.optBoolean("is_bot"),
+                    telegramUpdateId = update.getLong("update_id")
                 )
             )
         }

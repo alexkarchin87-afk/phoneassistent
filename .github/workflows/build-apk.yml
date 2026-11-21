@@ -155,7 +155,7 @@ jobs:
           disable-animations: true
           script: |
             python3 scripts/android_smoke.py smoke-apk/app-debug.apk
-            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.safefix python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
+            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.audit2 python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
             adb shell run-as com.voiceagent.oneplus13 ls files/smoke_data_kept
             adb push tiny.gguf /data/local/tmp/voiceagent-tiny.gguf
             adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-tiny.gguf files/tiny.gguf

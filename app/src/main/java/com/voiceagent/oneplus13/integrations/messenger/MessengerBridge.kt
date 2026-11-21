@@ -35,6 +35,8 @@ class MessengerBridge(
                     telegram.pollUpdates(it)
                 },
                 publish = onMessage,
+                loadOffset = telegram::savedOffset,
+                saveOffset = telegram::saveOffset,
                 reportError = { error -> verified = false; onError(error) }
             ).run()
         }

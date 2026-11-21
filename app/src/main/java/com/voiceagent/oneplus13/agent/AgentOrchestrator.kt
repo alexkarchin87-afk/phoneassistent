@@ -315,7 +315,10 @@ class AgentOrchestrator(
     private suspend fun handleExternalEvent(event: AgentEvent) {
         if (event !is AgentEvent.ActionRequested) return
         if (event.action != "botfather_token_found") return
-        if (pendingConfirmation?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) pendingConfirmation = null
+        if (pendingConfirmation?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) {
+            pendingConfirmation?.takeIf { it.action == "apply_captured_token" }?.params?.get("project")?.let { tokenCapture.consumePendingToken(it) }
+            pendingConfirmation = null
+        }
         if (pendingConfirmation != null) return
 
         val project = event.params["project"] ?: return
@@ -324,7 +327,7 @@ class AgentOrchestrator(
         pendingConfirmation = PendingConfirmation(
             action = "apply_captured_token",
             params = mapOf("project" to project),
-            question = "В уведомлении с именем BotFather найден токен ($masked) для проекта \"$project\". Проверь отправителя в Telegram. Использовать токен?"
+            question = "В уведомлении с именем BotFather найден токен ($masked) для проекта \"$project\". Имя уведомления можно подделать. Проверь токен и отправителя в Telegram. Использовать токен?"
         )
         tts.speak(pendingConfirmation!!.question)
     }
