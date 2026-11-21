@@ -53,6 +53,11 @@ jobs:
       - name: Test model preparation
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
+      - name: Test backend HTTP security
+        run: |
+          python3 -m pip install -r backend/requirements.txt httpx==0.27.2
+          python3 -m unittest discover -s backend -p 'test_*.py' -v
+
       - name: Prepare offline Russian speech model
         run: python3 scripts/prepare_vosk_model.py
 

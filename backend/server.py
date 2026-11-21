@@ -12,13 +12,16 @@ import uuid
 import time
 import threading
 import hmac
-from collections import deque
+import json
+from collections import deque, OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
 # Подхватывает backend/.env при прямом запуске (uvicorn server:app --app-dir backend).
 # При запуске через docker-compose эту же переменную подставляет сам compose
@@ -53,11 +56,54 @@ class SubmitJobRequest(BaseModel):
     kind: str = Field(min_length=1, max_length=100)
     params_json: str = Field(max_length=16384)
 
+    @field_validator("params_json")
+    @classmethod
+    def params_must_be_json_object(cls, value: str) -> str:
+        try:
+            data = json.loads(value, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid constant")))
+        except (ValueError, TypeError) as exc:
+            raise ValueError("params_json must contain valid JSON") from exc
+        if not isinstance(data, dict):
+            raise ValueError("params_json must contain a JSON object")
+        return value
+
 
 JOBS: Dict[str, Job3D] = {}
 JOBS_LOCK = threading.Lock()
 SUBMISSIONS = deque()
 MAX_JOBS = 100
+EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="voiceagent-worker")
+REQUESTS_LOCK = threading.Lock()
+REQUESTS = OrderedDict()
+MAX_TRACKED_CLIENTS = 2048
+MAX_REQUESTS_PER_MINUTE = 120
+
+
+@app.middleware("http")
+async def limit_job_requests(request: Request, call_next):
+    # Covers rejected credentials and polling too. This is per-process and uses
+    # the peer address, not untrusted forwarded headers; proxies need their own limits.
+    if request.url.path == "/jobs" or request.url.path.startswith("/jobs/"):
+        client = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        with REQUESTS_LOCK:
+            while REQUESTS:
+                oldest = next(iter(REQUESTS))
+                if REQUESTS[oldest] and REQUESTS[oldest][-1] > now - 60:
+                    break
+                REQUESTS.popitem(last=False)
+            if client not in REQUESTS:
+                if len(REQUESTS) >= MAX_TRACKED_CLIENTS:
+                    REQUESTS.popitem(last=False)
+                REQUESTS[client] = deque()
+            times = REQUESTS[client]
+            while times and times[0] <= now - 60:
+                times.popleft()
+            if len(times) >= MAX_REQUESTS_PER_MINUTE:
+                return JSONResponse(status_code=429, content={"detail": "too many requests"})
+            times.append(now)
+            REQUESTS.move_to_end(client)
+    return await call_next(request)
 
 
 def require_auth(authorization: str = Header(default="")):
@@ -95,8 +141,9 @@ def submit_job(req: SubmitJobRequest, authorization: str = Header(default="")):
         SUBMISSIONS.append(now)
         job = Job3D(id=str(uuid.uuid4()), kind=req.kind, params_json=req.params_json)
         JOBS[job.id] = job
-    threading.Thread(target=run_job_stub, args=(job.id,), daemon=True).start()
-    return job
+        snapshot = job.model_copy(deep=True)
+    EXECUTOR.submit(run_job_stub, job.id)
+    return snapshot
 
 
 @app.get("/jobs/{job_id}", response_model=Job3D)
@@ -104,6 +151,8 @@ def get_job(job_id: str, authorization: str = Header(default="")):
     require_auth(authorization)
     with JOBS_LOCK:
         job = JOBS.get(job_id)
+        if job is not None:
+            job = job.model_copy(deep=True)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return job
