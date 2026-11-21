@@ -146,14 +146,20 @@ for _ in range(8):
     time.sleep(1)
 else: raise AssertionError('Root check not found')
 tap(root_check)
-adb('shell', 'input', 'swipe', '500', '1450', '500', '900', '300')
+adb('shell', 'input', 'swipe', '500', '1400', '500', '1200', '300')
 end = time.time() + 55
 labels = ('Root-доступ подтверждён', 'su не найден', 'Команда не выполнена',
           'не получила права root', 'Система запретила запуск su',
           'Root-запрос не получил ответа', 'Проверка root прервана')
+attempt = 0
 while time.time() < end:
     snapshot = ET.tostring(tree(), encoding='unicode')
     if any(label in snapshot for label in labels): break
+    # The result is a subtitle beneath the row; keep the row visible on devices
+    # with different insets instead of scrolling an entire screen past it.
+    if attempt == 3 and 'Проверить root' not in snapshot and 'Проверяем root' not in snapshot:
+        adb('shell', 'input', 'swipe', '500', '650', '500', '950', '300')
+    attempt += 1
     time.sleep(1)
 else: raise AssertionError('Root check did not finish or its result is off-screen: '+snapshot)
 for _ in range(8):
