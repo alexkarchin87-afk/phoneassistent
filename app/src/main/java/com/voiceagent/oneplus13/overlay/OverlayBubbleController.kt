@@ -70,6 +70,12 @@ class OverlayBubbleController(
     private var params: WindowManager.LayoutParams? = null
     private var eventsJob: Job? = null
     private var autoHideJob: Job? = null
+    private var panelOpen = false
+
+    private fun addMessage(message: ChatMessage) {
+        messages.add(message)
+        while (messages.size > MAX_MESSAGES) messages.removeAt(0)
+    }
 
     fun isShowing(): Boolean = composeView != null
 
@@ -86,7 +92,7 @@ class OverlayBubbleController(
 
     private fun scheduleAutoHide() {
         autoHideJob?.cancel()
-        if (alwaysVisible()) return
+        if (alwaysVisible() || panelOpen) return
         autoHideJob = scope.launch {
             delay(AUTO_HIDE_MS)
             hide()
@@ -144,10 +150,13 @@ class OverlayBubbleController(
                 params = layoutParams,
                 messages = messages,
                 onSend = { text ->
-                    messages.add(ChatMessage(text, isUser = true))
+                    addMessage(ChatMessage(text, isUser = true))
                     onSendText(text)
                 },
-                onPanelOpenChanged = { open -> if (open) pauseAutoHide() else scheduleAutoHide() }
+                onPanelOpenChanged = { open ->
+                    panelOpen = open
+                    if (open) pauseAutoHide() else scheduleAutoHide()
+                }
             )
             }
         }
@@ -163,15 +172,15 @@ class OverlayBubbleController(
             AgentEventBus.events.collect { event ->
                 when (event) {
                     is AgentEvent.Heard -> {
-                        messages.add(ChatMessage(event.text, isUser = true))
+                        addMessage(ChatMessage(event.text, isUser = true))
                         scheduleAutoHide()
                     }
                     is AgentEvent.Reply -> {
-                        messages.add(ChatMessage(event.text, isUser = false))
+                        addMessage(ChatMessage(event.text, isUser = false))
                         scheduleAutoHide()
                     }
-                    is AgentEvent.Error -> messages.add(ChatMessage("⚠ ${event.message}", isUser = false))
-                    is AgentEvent.ProjectReady -> messages.add(
+                    is AgentEvent.Error -> addMessage(ChatMessage("⚠ ${event.message}", isUser = false))
+                    is AgentEvent.ProjectReady -> addMessage(
                         ChatMessage(
                             text = "Готово — проект «${event.projectName}» собран в zip.",
                             isUser = false,
@@ -186,6 +195,7 @@ class OverlayBubbleController(
     }
 
     fun hide() {
+        panelOpen = false
         autoHideJob?.cancel()
         autoHideJob = null
         eventsJob?.cancel()
@@ -207,6 +217,7 @@ class OverlayBubbleController(
 
     companion object {
         private const val AUTO_HIDE_MS = 20_000L
+        private const val MAX_MESSAGES = 100
 
         fun canDrawOverlays(context: Context): Boolean = Settings.canDrawOverlays(context)
 

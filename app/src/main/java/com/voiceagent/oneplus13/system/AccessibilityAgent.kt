@@ -25,6 +25,8 @@ class AccessibilityAgent : AccessibilityService() {
         // Set by onServiceConnected(); SystemController posts commands into this instance.
         @Volatile var instance: AccessibilityAgent? = null
         private const val MAX_ANCESTOR_SEARCH_DEPTH = 8
+        private const val MAX_SCAN_DEPTH = 64
+        private const val MAX_SCAN_NODES = 1500
     }
 
     override fun onServiceConnected() {
@@ -49,20 +51,15 @@ class AccessibilityAgent : AccessibilityService() {
      *  visible text — many icon-only buttons (like a "like"/heart control in a
      *  music player) have no text at all, only a content description. */
     fun dumpVisibleText(): List<String> {
-        val root = rootInActiveWindow ?: return emptyList()
         val out = mutableListOf<String>()
-        collectText(root, out)
-        return out
-    }
-
-    private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>) {
-        // Editable fields can contain passwords, recovery codes, and private input.
-        if (node.isPassword || node.isEditable) return
-        node.text?.toString()?.takeIf { it.isNotBlank() }?.let(out::add)
-        node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let(out::add)
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { collectText(it, out) }
+        scan { node ->
+            if (node.isPassword || node.isEditable) Scan.SKIP_CHILDREN else {
+                node.text?.toString()?.takeIf { it.isNotBlank() }?.let(out::add)
+                node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let(out::add)
+                Scan.CONTINUE
+            }
         }
+        return out
     }
 
     /** Taps the first node whose visible text OR content description contains
@@ -70,56 +67,78 @@ class AccessibilityAgent : AccessibilityService() {
     fun tapByText(label: String): Boolean {
         val cleanLabel = label.trim()
         if (cleanLabel.isEmpty()) return false
-        val root = rootInActiveWindow ?: return false
-        val target = findNodeByText(root, cleanLabel) ?: return false
-        // Many icon-only controls put the contentDescription on a plain, non-clickable
-        // ImageView/TextView, while the actual click target is a parent container
-        // (Row/Button). Clicking the leaf we matched on would silently no-op.
-        val clickable = nearestClickableAncestor(target) ?: target
-        return clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        return tapMatching(cleanLabel, exact = false)
     }
 
     /** Exact labels avoid selecting an inverse action that merely contains a word. */
     fun tapByExactText(label: String): Boolean {
         val cleanLabel = label.trim()
         if (cleanLabel.isEmpty()) return false
+        return tapMatching(cleanLabel, exact = true)
+    }
+
+    private enum class Scan { CONTINUE, SKIP_CHILDREN, STOP }
+
+    @Suppress("DEPRECATION")
+    private fun scan(visit: (AccessibilityNodeInfo) -> Scan): Boolean {
         val root = rootInActiveWindow ?: return false
-        val target = findExactNode(root, cleanLabel) ?: return false
-        return (nearestClickableAncestor(target) ?: target).performAction(AccessibilityNodeInfo.ACTION_CLICK)
-    }
-
-    private fun findExactNode(node: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        if (node.text?.toString()?.trim()?.equals(label, ignoreCase = true) == true ||
-            node.contentDescription?.toString()?.trim()?.equals(label, ignoreCase = true) == true) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            findExactNode(child, label)?.let { return it }
+        val pending = java.util.ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        pending.push(root to 0)
+        var visited = 0
+        try {
+            while (pending.isNotEmpty() && visited < MAX_SCAN_NODES) {
+                val (node, depth) = pending.pop()
+                try {
+                    visited++
+                    when (visit(node)) {
+                        Scan.STOP -> return true
+                        Scan.SKIP_CHILDREN -> continue
+                        Scan.CONTINUE -> Unit
+                    }
+                    if (depth < MAX_SCAN_DEPTH) {
+                        for (i in node.childCount - 1 downTo 0) {
+                            if (visited + pending.size >= MAX_SCAN_NODES) break
+                            node.getChild(i)?.let { pending.push(it to depth + 1) }
+                        }
+                    }
+                } finally { node.recycle() }
+            }
+        } finally {
+            while (pending.isNotEmpty()) pending.pop().first.recycle()
         }
-        return null
+        return false
     }
 
-    private fun nearestClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        var current: AccessibilityNodeInfo? = node
+    private fun tapMatching(label: String, exact: Boolean): Boolean {
+        var result = false
+        scan { node ->
+            val matches = listOf(node.text, node.contentDescription).any { value ->
+                val text = value?.toString()?.trim() ?: return@any false
+                if (exact) text.equals(label, ignoreCase = true) else text.contains(label, ignoreCase = true)
+            }
+            if (matches) {
+                result = clickNodeOrAncestor(node)
+                Scan.STOP
+            } else Scan.CONTINUE
+        }
+        return result
+    }
+
+    @Suppress("DEPRECATION")
+    private fun clickNodeOrAncestor(node: AccessibilityNodeInfo): Boolean {
+        if (node.isClickable) return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        var current = node.parent
         var depth = 0
         while (current != null && depth < MAX_ANCESTOR_SEARCH_DEPTH) {
-            if (current.isClickable) return current
-            current = current.parent
+            val parent = current
+            current = try {
+                if (parent.isClickable) return parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                parent.parent
+            } finally { parent.recycle() }
             depth++
         }
-        return null
-    }
-
-    private fun findNodeByText(node: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        val text = node.text?.toString()
-        val description = node.contentDescription?.toString()
-        if (text?.contains(label, ignoreCase = true) == true) return node
-        if (description?.contains(label, ignoreCase = true) == true) return node
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { child ->
-                findNodeByText(child, label)?.let { return it }
-            }
-        }
-        return null
+        current?.recycle()
+        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 
     /** Returns true only when Android reports that the gesture completed. */
