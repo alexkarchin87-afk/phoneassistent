@@ -17,18 +17,22 @@ import com.voiceagent.oneplus13.core.security.SecretsStore
  */
 class TokenCapture(private val secrets: SecretsStore) {
 
-    private val tokenRegex = Regex("""\b(\d{6,10}:[A-Za-z0-9_-]{35})\b""")
-    private val telegramPackages = setOf("org.telegram.messenger", "org.telegram.messenger.web")
+    private val tokenRegex = Regex("""(?<![\w-])(\d{6,15}:[A-Za-z0-9_-]{35})(?![\w-])""")
+    companion object {
+        private val telegramPackages = setOf("org.telegram.messenger", "org.telegram.messenger.web")
+        internal fun isCandidate(packageName: String, title: String) =
+            packageName in telegramPackages && title.trim().equals("BotFather", ignoreCase = true)
+    }
 
     /** Call from NotificationReader for every posted notification. Returns true if a
      *  token was found and a confirmation event was published. */
     suspend fun onNotification(packageName: String, title: String, text: String, forProjectName: String?): Boolean {
-        if (packageName !in telegramPackages) return false
-        if (!title.contains("BotFather", ignoreCase = true)) return false
+        if (forProjectName.isNullOrBlank()) return false
+        if (!isCandidate(packageName, title)) return false
 
         val match = tokenRegex.find(text) ?: return false
         val token = match.value
-        val project = forProjectName ?: "last_project"
+        val project = forProjectName
         secrets.put(SecretsStore.pendingBotFatherTokenKey(project), token)
 
         AgentEventBus.publish(

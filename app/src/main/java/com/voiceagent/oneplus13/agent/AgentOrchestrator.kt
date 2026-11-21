@@ -20,17 +20,24 @@ import com.voiceagent.oneplus13.notes.NotesStorage
 import com.voiceagent.oneplus13.system.ChatsDigest
 import com.voiceagent.oneplus13.system.PendingProject
 import com.voiceagent.oneplus13.system.SystemController
+import com.voiceagent.oneplus13.system.RootActions
 import com.voiceagent.oneplus13.workflow.WorkflowAiBuilder
 import com.voiceagent.oneplus13.workflow.WorkflowRunner
 import com.voiceagent.oneplus13.workflow.WorkflowStorage
 import com.voiceagent.oneplus13.workflow.Workflow
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
+import com.voiceagent.oneplus13.workflow.describeWorkflowForConfirmation
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import android.os.SystemClock
 import org.json.JSONObject
+import org.json.JSONTokener
 
-private data class PendingConfirmation(val action: String, val params: Map<String, String>, val question: String)
-private data class PendingCodeChoice(val projectName: String, val platform: String)
+private data class PendingConfirmation(val action: String, val params: Map<String, String>, val question: String,
+    val expiresAt: Long = SystemClock.elapsedRealtime() + 30_000L)
+private data class PendingCodeChoice(val projectName: String, val platform: String,
+    val expiresAt: Long = SystemClock.elapsedRealtime() + 30_000L)
 
 /**
  * Central dispatcher: takes a raw transcript, decides (via the LLM, with a small
@@ -48,30 +55,32 @@ class AgentOrchestrator(
     scope: CoroutineScope
 ) {
     private val systemController = SystemController(context)
-    private val lectureCommands = LectureCommands(context)
-    private val secrets = SecretsStore(context)
+    private val lectureCommands = LectureCommands(context, llm, scope)
+    private val secrets by lazy { SecretsStore(context) }
     private val codeGenAgent = CodeGenAgent(llm)
     private val projectStorage = ProjectStorage(context)
-    private val tokenCapture = TokenCapture(secrets)
+    private val tokenCapture by lazy { TokenCapture(secrets) }
     private val userMemory = UserMemory(context)
     private val notesBuilder = NotesBuilder(llm)
     private val notesStorage = NotesStorage(context)
-    private val chatsDigest = ChatsDigest(context, llm)
+    private val chatsDigest = ChatsDigest(context)
     private val featureRequests = FeatureRequests(context)
     private val workflowStorage = WorkflowStorage(context)
     private val workflowRunner = WorkflowRunner(systemController, tts)
     private val workflowAiBuilder = WorkflowAiBuilder(llm)
     private val history = ArrayDeque<ChatMessage>(MAX_HISTORY)
+    private val conversationMutex = Mutex()
 
     private var lastGeneratedProjectName: String? = null
     private var lastNotesTopic: String? = null
-    private var pendingConfirmation: PendingConfirmation? = null
+    @Volatile private var pendingConfirmation: PendingConfirmation? = null
     private var pendingCodeChoice: PendingCodeChoice? = null
 
     init {
-        // Listen for events raised outside a direct voice command (e.g. TokenCapture
-        // spotting a BotFather message) and turn them into a spoken confirmation.
-        AgentEventBus.events.onEach(::handleExternalEvent).launchIn(scope)
+        // Do not block the shared-flow collector on a mutex held by a publisher.
+        // A bounded conflated mailbox is sufficient: only the latest pending token
+        // for a project can be applied, and the secret itself stays in the store.
+        scope.bridgeTokenEvents(AgentEventBus.events, conversationMutex) { handleExternalEvent(it) }
     }
 
     private fun buildSystemPrompt(): String {
@@ -171,7 +180,50 @@ class AgentOrchestrator(
         return if (facts.isBlank()) base else "$base\n\n$facts"
     }
 
-    suspend fun handleTranscript(text: String) {
+    suspend fun handleTranscript(text: String) = conversationMutex.withLock {
+        handleTranscriptLocked(text)
+    }
+
+    fun isRecordingLecture(): Boolean = lectureCommands.isRecording()
+    fun appendLectureTranscript(text: String) = lectureCommands.appendTranscript(text)
+    fun isAwaitingConfirmation(): Boolean = pendingConfirmation?.let {
+        SystemClock.elapsedRealtime() <= it.expiresAt
+    } ?: false
+    fun onServiceStopping() = lectureCommands.preserveOnShutdown()
+
+    private suspend fun handleTranscriptLocked(text: String) {
+        if (pendingConfirmation?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) {
+            pendingConfirmation?.takeIf { it.action == "apply_captured_token" }?.params?.get("project")?.let { tokenCapture.consumePendingToken(it) }
+            pendingConfirmation = null
+        }
+        if (pendingCodeChoice?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) {
+            pendingCodeChoice = null
+        }
+        pendingConfirmation?.let { pending ->
+            when (classifyYesNo(text)) {
+                true -> {
+                    pendingConfirmation = null
+                    AgentEventBus.publish(AgentEvent.ActionRequested(
+                        pending.action, pending.params.filterKeys { !it.startsWith("_") }
+                    ))
+                    try {
+                        dispatch(pending.action, pending.params)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (t: Throwable) {
+                        val message = friendlyAssistantError(t)
+                        AgentEventBus.publish(AgentEvent.Error(message, t))
+                        tts.speak(message)
+                    }
+                }
+                false -> {
+                    pendingConfirmation = null
+                    if (pending.action == "apply_captured_token") pending.params["project"]?.let { tokenCapture.consumePendingToken(it) }
+                    tts.speak("Хорошо, отменено.")
+                }
+                null -> tts.speak("Скажи «да» или «отмена».")
+            }
+            return
+        }
         pendingCodeChoice?.let { pending ->
             when (classifyCodeChoice(text)) {
                 CodeChoice.RUN_NOW -> {
@@ -194,26 +246,14 @@ class AgentOrchestrator(
             }
         }
 
-        pendingConfirmation?.let { pending ->
-            when (classifyYesNo(text)) {
-                true -> {
-                    pendingConfirmation = null
-                    AgentEventBus.publish(AgentEvent.ActionRequested(pending.action, pending.params))
-                    dispatch(pending.action, pending.params)
-                    return
-                }
-                false -> {
-                    pendingConfirmation = null
-                    tts.speak("Хорошо, не буду.")
-                    return
-                }
-                null -> { /* not a clear yes/no — fall through and treat as a new command */ }
-            }
+        localAnswer(text)?.let { answer ->
+            AgentEventBus.publish(AgentEvent.Reply(answer))
+            tts.speak(answer)
+            return
         }
 
         workflowStorage.findByTriggerIn(text)?.let { workflow ->
-            AgentEventBus.publish(AgentEvent.ActionRequested("run_workflow", mapOf("name" to workflow.name)))
-            runWorkflow(workflow)
+            requestConfirmation("run_workflow", mapOf("name" to workflow.name))
             return
         }
 
@@ -228,9 +268,16 @@ class AgentOrchestrator(
                 remember(ChatMessage("assistant", reply))
                 AgentEventBus.publish(AgentEvent.Reply(reply))
                 tts.speak(reply)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
-                AgentEventBus.publish(AgentEvent.Error("Не удалось спросить Claude", t))
-                tts.speak("Не получилось спросить Claude — проверь ключ в Настройках.")
+                val message = if (t.message.orEmpty().contains("LOCAL_CLAUDE_DISABLED")) {
+                    friendlyAssistantError(t)
+                } else {
+                    "Не получилось спросить Claude — проверь ключ в Настройках."
+                }
+                AgentEventBus.publish(AgentEvent.Error(message, t))
+                tts.speak(message)
             }
             return
         }
@@ -243,15 +290,22 @@ class AgentOrchestrator(
 
             val action = tryParseAction(reply)
             if (action != null) {
-                AgentEventBus.publish(AgentEvent.ActionRequested(action.first, action.second))
-                dispatch(action.first, action.second)
+                if (action.first in CONFIRM_ACTIONS) {
+                    requestConfirmation(action.first, action.second)
+                } else {
+                    AgentEventBus.publish(AgentEvent.ActionRequested(action.first, action.second))
+                    dispatch(action.first, action.second)
+                }
             } else {
                 AgentEventBus.publish(AgentEvent.Reply(reply))
                 tts.speak(reply)
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
-            AgentEventBus.publish(AgentEvent.Error("Не удалось обработать команду", t))
-            tts.speak("Что-то пошло не так, попробуй ещё раз.")
+            val message = friendlyAssistantError(t)
+            AgentEventBus.publish(AgentEvent.Error(message, t))
+            tts.speak(message)
         }
     }
 
@@ -261,13 +315,19 @@ class AgentOrchestrator(
     private suspend fun handleExternalEvent(event: AgentEvent) {
         if (event !is AgentEvent.ActionRequested) return
         if (event.action != "botfather_token_found") return
+        if (pendingConfirmation?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) {
+            pendingConfirmation?.takeIf { it.action == "apply_captured_token" }?.params?.get("project")?.let { tokenCapture.consumePendingToken(it) }
+            pendingConfirmation = null
+        }
+        if (pendingConfirmation != null) return
 
         val project = event.params["project"] ?: return
+        if (project != PendingProject.awaitingTokenFor) return
         val masked = event.params["masked_token"] ?: "токен"
         pendingConfirmation = PendingConfirmation(
             action = "apply_captured_token",
             params = mapOf("project" to project),
-            question = "Похоже, BotFather прислал токен ($masked) для проекта \"$project\". Использовать его?"
+            question = "В уведомлении с именем BotFather найден токен ($masked) для проекта \"$project\". Имя уведомления можно подделать. Проверь токен и отправителя в Telegram. Использовать токен?"
         )
         tts.speak(pendingConfirmation!!.question)
     }
@@ -277,8 +337,8 @@ class AgentOrchestrator(
         val yes = setOf("да", "ага", "угу", "давай", "используй", "конечно", "yes")
         val no = setOf("нет", "не надо", "отмена", "no")
         return when {
-            yes.any { t.contains(it) } -> true
-            no.any { t.contains(it) } -> false
+            t.trim('.', '!', '?', ' ') in yes -> true
+            t.trim('.', '!', '?', ' ') in no -> false
             else -> null
         }
     }
@@ -298,11 +358,11 @@ class AgentOrchestrator(
      *  "скомпилировать и запустить" или "пришить как системную команду". */
     private fun classifyCodeChoice(text: String): CodeChoice {
         val t = text.trim().lowercase()
-        val runNow = setOf("скомпилир", "запусти", "запуск", "прямо сейчас", "готовое приложение", "новый экран")
-        val pin = setOf("пришей", "пришить", "системн", "команд", "встрой", "добавь как команду")
+        val runNow = setOf("запусти сейчас", "скомпилируй и запусти", "запустить сейчас")
+        val pin = setOf("пришей как команду", "добавь как команду")
         return when {
-            pin.any { t.contains(it) } -> CodeChoice.PIN_AS_COMMAND
-            runNow.any { t.contains(it) } -> CodeChoice.RUN_NOW
+            t in pin -> CodeChoice.PIN_AS_COMMAND
+            t in runNow -> CodeChoice.RUN_NOW
             else -> CodeChoice.NONE
         }
     }
@@ -334,10 +394,13 @@ class AgentOrchestrator(
     }
 
     private fun tryParseAction(reply: String): Pair<String, Map<String, String>>? {
-        val candidate = extractJsonObject(reply) ?: return null
+        val candidate = reply.trim()
+        if (!candidate.startsWith("{")) return null
         return try {
-            val json = JSONObject(candidate)
-            val action = json.optString("action").takeIf { it.isNotBlank() } ?: return null
+            val tokener = JSONTokener(candidate)
+            val json = tokener.nextValue() as? JSONObject ?: return null
+            if (tokener.nextClean() != '\u0000') return null
+            val action = json.optString("action").takeIf { it in LLM_ACTIONS } ?: return null
             val paramsJson = json.optJSONObject("params") ?: JSONObject()
             val params = paramsJson.keys().asSequence().associateWith { paramsJson.getString(it) }
             action to params
@@ -346,15 +409,76 @@ class AgentOrchestrator(
         }
     }
 
+    private suspend fun requestConfirmation(action: String, params: Map<String, String>) {
+        val approvedParams = if (action == "run_workflow") {
+            val name = params["name"].orEmpty()
+            val workflow = workflowStorage.findByName(name)
+            if (name.isBlank() || workflow == null) {
+                tts.speak("Не нашёл этот сценарий.")
+                return
+            }
+            val description = describeWorkflowForConfirmation(workflow)
+            if (description == null) {
+                tts.speak("Не могу безопасно перечислить все шаги. Открой сценарий в редакторе и проверь его.")
+                return
+            }
+            mapOf("name" to workflow.name, "_workflow_snapshot" to workflow.toJson().toString(),
+                "_workflow_description" to description)
+        } else params.toMap()
+        val detail = when (action) {
+            "reply_notification" -> "Отправить ${params["name"].orEmpty()}: ${params["text"].orEmpty()}?"
+            "open_url" -> "Открыть ссылку ${params["url"].orEmpty()}?"
+            "open_app" -> "Открыть приложение ${params["package"].orEmpty()}?"
+            "tap_text" -> "Нажать ${params["label"].orEmpty()}?"
+            "set_volume" -> "Установить громкость ${params["percent"].orEmpty()} процентов?"
+            "lecture_start" -> "Начать запись речи в текст лекции?"
+            "lecture_stop" -> "Остановить запись и отправить текст лекции модели для конспекта?"
+            "install_app" -> "Открыть или скачать ${params["query"].orEmpty()} для установки?"
+            "toggle_wifi", "toggle_bluetooth", "toggle_mobile_data" ->
+                "Изменить ${action.removePrefix("toggle_")} на ${params["enabled"].orEmpty()}?"
+            "run_workflow" -> "Запустить сценарий ${approvedParams["name"]}? Шаги: ${approvedParams["_workflow_description"]}."
+            "describe_screen", "identify_on_screen" -> "Описание экрана сейчас отключено."
+            "chats_digest" -> "Прочитать локальную сводку уведомлений?"
+            else -> "Выполнить действие $action?"
+        }
+        AgentEventBus.publish(AgentEvent.Reply(detail))
+        tts.speak("$detail Скажи да или отмена.")
+        // The response window starts after the prompt finishes, even for long workflows.
+        pendingConfirmation = PendingConfirmation(action, approvedParams, detail)
+    }
+
     private suspend fun dispatch(action: String, params: Map<String, String>) {
         when (action) {
-            "open_app" -> params["package"]?.let { systemController.openApp(it) }
+            "open_app" -> {
+                val name = params["package"].orEmpty()
+                val opened = name.isNotBlank() && systemController.openApp(name)
+                val message = if (opened) "Открываю $name." else "Не нашёл приложение $name."
+                AgentEventBus.publish(AgentEvent.Reply(message))
+                tts.speak(message)
+            }
             "open_url" -> params["url"]?.let { systemController.openUrl(it) }
             "set_volume" -> params["percent"]?.toIntOrNull()?.let { systemController.setMediaVolume(it) }
-            "tap_text" -> params["label"]?.let { systemController.tapByText(it) }
-            "swipe_up" -> systemController.swipeUp()
-            "lecture_start" -> lectureCommands.start(params["title"] ?: "Лекция")
-            "lecture_stop" -> lectureCommands.stop()
+            "tap_text" -> {
+                val label = params["label"].orEmpty()
+                val tapped = label.isNotBlank() && systemController.tapByText(label)
+                val message = if (tapped) "Нажал $label." else "Не удалось нажать $label. Проверь специальный доступ и видимость кнопки."
+                AgentEventBus.publish(AgentEvent.Reply(message))
+                tts.speak(message)
+            }
+            "swipe_up" -> {
+                val message = if (systemController.swipeUp()) "Пролистал вверх."
+                    else "Не удалось пролистать. Проверь специальный доступ и активный экран."
+                AgentEventBus.publish(AgentEvent.Reply(message))
+                tts.speak(message)
+            }
+            "lecture_start" -> tts.speak(
+                if (lectureCommands.start(params["title"] ?: "Лекция")) "Начал запись лекции."
+                else "Лекция уже записывается."
+            )
+            "lecture_stop" -> tts.speak(
+                if (lectureCommands.stop()) "Текст сохранён, готовлю конспект."
+                else "Сейчас лекция не записывается."
+            )
             "lecture_summary" -> tts.speak(lectureCommands.latestSummary() ?: "Пока нет сохранённых лекций")
             "generate_code" -> handleGenerateCode(params)
             "continue_code" -> handleContinueCode(params)
@@ -464,32 +588,7 @@ class AgentOrchestrator(
      * ответа — он вполне мог измениться между шагами.
      */
     private suspend fun handleDescribeScreen(params: Map<String, String>) {
-        val question = params["question"].orEmpty()
-        val screenText = systemController.readScreen()
-        if (screenText.isEmpty()) {
-            tts.speak(
-                "Не вижу содержимого экрана — проверь, что для VoiceAgent включён " +
-                    "специальный доступ (Accessibility) в настройках."
-            )
-            return
-        }
-
-        val dump = screenText.joinToString(" · ").take(MAX_SCREEN_DUMP_CHARS)
-        val screenPrompt = """
-            Тебе дан список видимых надписей и подписей элементов на экране телефона
-            пользователя (порядок обхода интерфейса, не обязательно порядок на экране).
-            Объясни коротко, по шагам, что пользователь видит и что нажать, чтобы
-            добиться того, что он просит. Каждый шаг — отдельное короткое предложение,
-            начинающееся с глагола действия ("нажми…", "введи…", "пролистай…").
-            Не придумывай элементы, которых нет в списке ниже — если непонятно, что
-            нажать, честно скажи, что не уверен, и предложи пролистать экран.
-
-            Видимые элементы экрана: $dump
-        """.trimIndent()
-
-        val reply = llm.complete(screenPrompt, emptyList(), question.ifBlank { "Что на экране и что делать?" })
-        AgentEventBus.publish(AgentEvent.Reply(reply))
-        tts.speak(reply)
+        tts.speak("Передача содержимого экрана в модель временно отключена для защиты личных данных.")
     }
 
     /**
@@ -501,32 +600,7 @@ class AgentOrchestrator(
      * одному только тексту.
      */
     private suspend fun handleIdentifyOnScreen(params: Map<String, String>) {
-        val question = params["question"].orEmpty()
-        val screenText = systemController.readScreen()
-        if (screenText.isEmpty()) {
-            tts.speak(
-                "Не вижу содержимого экрана — проверь, что для VoiceAgent включён " +
-                    "специальный доступ (Accessibility) в настройках."
-            )
-            return
-        }
-
-        val dump = screenText.joinToString(" · ").take(MAX_SCREEN_DUMP_CHARS)
-        val identifyPrompt = """
-            Тебе дан список видимых надписей и подписей элементов на экране телефона.
-            Пользователь спрашивает "что это" про что-то на экране (картина,
-            достопримечательность, устройство и т.п.). Если по подписям на экране
-            понятно, что это — назови точное имя/автора/год (если применимо) и дай
-            интересную справку в 2-3 предложениях, БЕЗ инструкций, что нажимать.
-            Если по этим подписям невозможно понять, что именно на экране — честно
-            скажи, что не можешь определить только по видимому тексту.
-
-            Видимые элементы экрана: $dump
-        """.trimIndent()
-
-        val reply = llm.complete(identifyPrompt, emptyList(), question.ifBlank { "Что это?" })
-        AgentEventBus.publish(AgentEvent.Reply(reply))
-        tts.speak(reply)
+        tts.speak("Передача содержимого экрана в модель временно отключена для защиты личных данных.")
     }
 
     /** "Что нового / прочитай уведомления" — пересказ того, что накопилось в
@@ -580,7 +654,11 @@ class AgentOrchestrator(
      *  списка (см. [com.voiceagent.oneplus13.system.RootActions] — LLM выбирает
      *  ТОЛЬКО имя действия, не пишет shell-команду сама). */
     private suspend fun handleRootToggle(toggle: com.voiceagent.oneplus13.system.RootActions.Toggle, params: Map<String, String>) {
-        val enabled = params["enabled"]?.equals("true", ignoreCase = true) ?: true
+        val enabled = when (params["enabled"]?.lowercase()) {
+            "true" -> true
+            "false" -> false
+            else -> { tts.speak("Не понял, нужно включить или выключить."); return }
+        }
         val result = com.voiceagent.oneplus13.system.RootActions.setToggle(toggle, enabled)
         val label = when (toggle) {
             com.voiceagent.oneplus13.system.RootActions.Toggle.WIFI -> "Wi-Fi"
@@ -595,6 +673,7 @@ class AgentOrchestrator(
             is com.voiceagent.oneplus13.system.RootActions.Result.Error ->
                 "Не получилось: ${result.message}"
         }
+        AgentEventBus.publish(AgentEvent.Reply(message))
         tts.speak(message)
     }
 
@@ -602,12 +681,15 @@ class AgentOrchestrator(
      *  root-обхода экрана подтверждения установки. */
     private suspend fun handleInstallApp(params: Map<String, String>) {
         val target = params["query"] ?: return
-        when (val outcome = systemController.installApp(target)) {
-            is SystemController.InstallOutcome.OpenedPlayStore -> tts.speak("Открыл Play Маркет — там нажми «Установить».")
-            is SystemController.InstallOutcome.OpenedUrl -> tts.speak("Открыл ссылку в браузере.")
-            is SystemController.InstallOutcome.PromptedInstall -> tts.speak("Скачал — подтверди установку на экране.")
-            is SystemController.InstallOutcome.Failed -> tts.speak("Не получилось скачать: ${outcome.reason}")
+        val message = when (val outcome = systemController.installApp(target)) {
+            is SystemController.InstallOutcome.OpenedPlayStore -> "Открыл Play Маркет — там нажми «Установить»."
+            is SystemController.InstallOutcome.OpenedUrl -> "Открыл ссылку в браузере."
+            is SystemController.InstallOutcome.PromptedInstall -> "Скачал — подтверди установку на экране."
+            is SystemController.InstallOutcome.NeedsInstallPermission -> "Разреши установку APK в настройках Вани, затем повтори запрос."
+            is SystemController.InstallOutcome.Failed -> outcome.reason
         }
+        AgentEventBus.publish(AgentEvent.Reply(message))
+        tts.speak(message)
     }
 
     /** "Собери конспект по..." — из присланных источников (текст лекции, слайды,
@@ -651,16 +733,13 @@ class AgentOrchestrator(
         tts.speak("Дополнил конспект \"$topic\".")
     }
 
-    /** "Запусти сценарий Х" — ищет сохранённый сценарий по имени и выполняет. */
+    /** Execute the snapshot actually described at confirmation, even if the saved file changes. */
     private suspend fun handleRunWorkflowByName(params: Map<String, String>) {
-        val name = params["name"]
-        if (name.isNullOrBlank()) {
-            tts.speak("Какой сценарий запустить?")
-            return
+        val workflow = params["_workflow_snapshot"]?.let {
+            runCatching { Workflow.fromJson(JSONObject(it)) }.getOrNull()
         }
-        val workflow = workflowStorage.findByName(name)
         if (workflow == null) {
-            tts.speak("Не нашёл сценарий \"$name\". Собери его сначала в Мастерской сценариев.")
+            tts.speak("Не удалось проверить подтверждённый сценарий.")
             return
         }
         runWorkflow(workflow)
@@ -690,7 +769,8 @@ class AgentOrchestrator(
         tts.speak("Собираю сценарий, секунду.")
         val workflow = try {
             workflowAiBuilder.build(description)
-        } catch (t: Throwable) {
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (t: Throwable) {
             tts.speak("Не получилось собрать сценарий — попробуй описать проще или собери руками в Мастерской.")
             return
         }
@@ -704,17 +784,16 @@ class AgentOrchestrator(
 
     /** "Что за музыка играет" — берёт метаданные из активной медиасессии, какое бы
      *  приложение сейчас ни играло (не только Яндекс Музыка). */
-    private fun handleNowPlaying() {
+    private suspend fun handleNowPlaying() {
         val track = systemController.nowPlaying()
-        if (track == null) {
-            tts.speak(
-                "Не вижу, что сейчас играет — либо ничего не воспроизводится, либо ещё " +
-                    "не выдан доступ к уведомлениям (нужен для чтения медиасессий)."
-            )
-            return
+        val message = if (track == null) {
+            "Не вижу, что сейчас играет. Проверь воспроизведение и доступ к уведомлениям."
+        } else {
+            val artistPart = track.artist?.let { " — $it" }.orEmpty()
+            "Сейчас играет: ${track.title}$artistPart."
         }
-        val artistPart = track.artist?.let { " — $it" }.orEmpty()
-        tts.speak("Сейчас играет: ${track.title}$artistPart.")
+        AgentEventBus.publish(AgentEvent.Reply(message))
+        tts.speak(message)
     }
 
     /** "Добавь в избранное в Яндекс Музыке" — открывает Яндекс Музыку (если там что-то
@@ -761,5 +840,14 @@ class AgentOrchestrator(
             "запустить прямо сейчас как готовое полноценное приложение (.exe на Windows или новый " +
             "экран на OnePlus 13)? Пришить эту утилиту к Ване как новую системную команду (НЕ игру!)?"
         private const val MAX_SCREEN_DUMP_CHARS = 3000
+        private val CONFIRM_ACTIONS = setOf(
+            "open_app", "open_url", "set_volume", "tap_text", "swipe_up",
+            "lecture_start", "lecture_stop", "generate_code", "continue_code",
+            "describe_screen", "identify_on_screen", "like_current_track", "chats_digest",
+            "reply_notification", "toggle_wifi", "toggle_bluetooth", "toggle_mobile_data",
+            "install_app", "notes_build", "notes_extend", "run_workflow", "create_workflow",
+            "remember_fact", "forget_fact"
+        )
+        private val LLM_ACTIONS = CONFIRM_ACTIONS + setOf("lecture_summary", "now_playing", "run_diagnostics")
     }
 }

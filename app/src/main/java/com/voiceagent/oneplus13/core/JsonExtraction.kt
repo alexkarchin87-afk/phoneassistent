@@ -15,13 +15,23 @@ fun extractJsonObject(text: String): String? {
         .removePrefix("```json").removePrefix("```JSON").removePrefix("```")
         .removeSuffix("```")
         .trim()
-    if (unfenced.startsWith("{")) return unfenced
-
     val start = unfenced.indexOf('{')
     if (start == -1) return null
     var depth = 0
+    var inString = false
+    var escaped = false
     for (i in start until unfenced.length) {
-        when (unfenced[i]) {
+        val char = unfenced[i]
+        if (inString) {
+            when {
+                escaped -> escaped = false
+                char == '\\' -> escaped = true
+                char == '"' -> inString = false
+            }
+            continue
+        }
+        when (char) {
+            '"' -> inString = true
             '{' -> depth++
             '}' -> {
                 depth--

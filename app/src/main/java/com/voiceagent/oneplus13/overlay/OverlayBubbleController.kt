@@ -32,13 +32,16 @@ import com.voiceagent.oneplus13.core.AgentEventBus
 import com.voiceagent.oneplus13.ui.ChatMessage
 import com.voiceagent.oneplus13.ui.FloatingSparkButton
 import com.voiceagent.oneplus13.ui.WindowsCornerPopup
+import com.voiceagent.oneplus13.ui.AgentPhase
+import com.voiceagent.oneplus13.ui.rememberAgentPhase
+import com.voiceagent.oneplus13.ui.theme.VoiceAgentTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private val QUICK_PROMPTS = listOf("Что на экране?", "Что это?", "Что сейчас играет?", "Что нового?", "Заверши лекцию")
+private val QUICK_PROMPTS = listOf("Который час?", "Какой сегодня день?", "Что сейчас играет?", "Что нового?", "Заверши лекцию")
 
 /**
  * Настоящий системный "пузырь" поверх ЛЮБОГО приложения — как чат-хед у
@@ -56,16 +59,23 @@ private val QUICK_PROMPTS = listOf("Что на экране?", "Что это?"
 class OverlayBubbleController(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val onSendText: (String) -> Unit
+    private val onSendText: (String) -> Unit,
+    private val alwaysVisible: () -> Boolean = { false }
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private val lifecycleOwner = OverlayLifecycleOwner()
+    private var lifecycleOwner: OverlayLifecycleOwner? = null
     private val messages = SnapshotStateList<ChatMessage>()
 
     private var composeView: ComposeView? = null
     private var params: WindowManager.LayoutParams? = null
     private var eventsJob: Job? = null
     private var autoHideJob: Job? = null
+    private var panelOpen = false
+
+    private fun addMessage(message: ChatMessage) {
+        messages.add(message)
+        while (messages.size > MAX_MESSAGES) messages.removeAt(0)
+    }
 
     fun isShowing(): Boolean = composeView != null
 
@@ -82,6 +92,7 @@ class OverlayBubbleController(
 
     private fun scheduleAutoHide() {
         autoHideJob?.cancel()
+        if (alwaysVisible() || panelOpen) return
         autoHideJob = scope.launch {
             delay(AUTO_HIDE_MS)
             hide()
@@ -90,6 +101,16 @@ class OverlayBubbleController(
 
     private fun pauseAutoHide() {
         autoHideJob?.cancel()
+    }
+
+    fun setAlwaysVisible(enabled: Boolean) {
+        if (enabled) {
+            autoHideJob?.cancel()
+            autoHideJob = null
+            show()
+        } else {
+            hide()
+        }
     }
 
     fun show() {
@@ -114,44 +135,52 @@ class OverlayBubbleController(
         params = layoutParams
 
         val view = ComposeView(context)
-        lifecycleOwner.attachToView(view)
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_START)
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        // A destroyed lifecycle cannot be attached again when the bubble reappears.
+        val owner = OverlayLifecycleOwner()
+        owner.attachToView(view)
+        owner.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        owner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
 
         view.setContent {
+            VoiceAgentTheme {
             BubbleContent(
                 windowManager = windowManager,
                 view = view,
                 params = layoutParams,
                 messages = messages,
                 onSend = { text ->
-                    messages.add(ChatMessage(text, isUser = true))
+                    addMessage(ChatMessage(text, isUser = true))
                     onSendText(text)
                 },
-                onPanelOpenChanged = { open -> if (open) pauseAutoHide() else scheduleAutoHide() }
+                onPanelOpenChanged = { open ->
+                    panelOpen = open
+                    if (open) pauseAutoHide() else scheduleAutoHide()
+                }
             )
+            }
         }
 
         runCatching { windowManager.addView(view, layoutParams) }.onFailure {
-            lifecycleOwner.onDestroy()
+            owner.onDestroy()
             return
         }
+        lifecycleOwner = owner
         composeView = view
 
         eventsJob = scope.launch {
             AgentEventBus.events.collect { event ->
                 when (event) {
                     is AgentEvent.Heard -> {
-                        messages.add(ChatMessage(event.text, isUser = true))
+                        addMessage(ChatMessage(event.text, isUser = true))
                         scheduleAutoHide()
                     }
                     is AgentEvent.Reply -> {
-                        messages.add(ChatMessage(event.text, isUser = false))
+                        addMessage(ChatMessage(event.text, isUser = false))
                         scheduleAutoHide()
                     }
-                    is AgentEvent.Error -> messages.add(ChatMessage("⚠ ${event.message}", isUser = false))
-                    is AgentEvent.ProjectReady -> messages.add(
+                    is AgentEvent.Error -> addMessage(ChatMessage("⚠ ${event.message}", isUser = false))
+                    is AgentEvent.ProjectReady -> addMessage(
                         ChatMessage(
                             text = "Готово — проект «${event.projectName}» собран в zip.",
                             isUser = false,
@@ -166,6 +195,7 @@ class OverlayBubbleController(
     }
 
     fun hide() {
+        panelOpen = false
         autoHideJob?.cancel()
         autoHideJob = null
         eventsJob?.cancel()
@@ -173,7 +203,8 @@ class OverlayBubbleController(
         composeView?.let { runCatching { windowManager.removeView(it) } }
         composeView = null
         params = null
-        lifecycleOwner.onDestroy()
+        lifecycleOwner?.onDestroy()
+        lifecycleOwner = null
     }
 
     private fun overlayWindowType(): Int =
@@ -186,6 +217,7 @@ class OverlayBubbleController(
 
     companion object {
         private const val AUTO_HIDE_MS = 20_000L
+        private const val MAX_MESSAGES = 100
 
         fun canDrawOverlays(context: Context): Boolean = Settings.canDrawOverlays(context)
 
@@ -217,7 +249,7 @@ private fun BubbleContent(
 ) {
     var panelVisible by remember { mutableStateOf(false) }
     val statusText by AgentEventBus.lastStatus.collectAsState()
-    val isListening = statusText.contains("Слуш", ignoreCase = true)
+    val isListening = rememberAgentPhase(true, statusText) == AgentPhase.LISTENING
     val density = LocalDensity.current
     val tapThresholdPx = with(density) { 8.dp.toPx() }
 

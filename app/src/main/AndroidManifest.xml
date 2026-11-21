@@ -14,6 +14,7 @@
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!--
@@ -44,6 +45,7 @@
 
         <activity
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>
@@ -65,7 +67,7 @@
         <service
             android:name=".core.VoiceAgentService"
             android:exported="false"
-            android:foregroundServiceType="microphone|dataSync" />
+            android:foregroundServiceType="microphone" />
 
         <service
             android:name=".system.AccessibilityAgent"
@@ -112,3 +114,4 @@
         </provider>
     </application>
 </manifest>
+

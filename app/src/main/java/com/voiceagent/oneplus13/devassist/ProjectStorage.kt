@@ -54,10 +54,11 @@ class ProjectStorage(private val context: Context) {
      *  без .gitignore, без служебной метки платформы и без соседнего .zip (он лежит
      *  рядом с папкой, не внутри неё). */
     fun loadProjectFiles(projectName: String): List<ProjectFile>? {
-        val projectDir = File(context.filesDir, "generated_projects/$projectName")
+        val projectDir = projectDirectory(projectName) ?: return null
         if (!projectDir.isDirectory) return null
         return projectDir.walkTopDown()
-            .filter { it.isFile && it.name != PLATFORM_META_FILE }
+            .filter { it.isFile && it.name != PLATFORM_META_FILE &&
+                it.canonicalPath.startsWith(projectDir.canonicalPath + File.separator) }
             .map { file -> ProjectFile(file.relativeTo(projectDir).path, file.readText()) }
             .toList()
     }
@@ -66,8 +67,17 @@ class ProjectStorage(private val context: Context) {
      *  проекта; "android", если метка почему-то потерялась (старые проекты,
      *  сохранённые до этого поля). */
     fun loadProjectPlatform(projectName: String): String {
-        val file = File(context.filesDir, "generated_projects/$projectName/$PLATFORM_META_FILE")
+        val projectDir = projectDirectory(projectName) ?: return "android"
+        val file = File(projectDir, PLATFORM_META_FILE)
+        if (!file.canonicalPath.startsWith(projectDir.canonicalPath + File.separator)) return "android"
         return file.takeIf { it.isFile }?.readText()?.trim()?.ifBlank { "android" } ?: "android"
+    }
+
+    private fun projectDirectory(name: String): File? {
+        if (name.isBlank() || name.contains('/') || name.contains('\\') || name == "." || name == "..") return null
+        val root = File(context.filesDir, "generated_projects").canonicalFile
+        val dir = File(root, sanitizeProjectName(name)).canonicalFile
+        return dir.takeIf { it.parentFile == root }
     }
 
     /** Имена всех когда-либо сгенерированных проектов — самые новые последними. */
@@ -149,3 +159,4 @@ class ProjectStorage(private val context: Context) {
         private const val PLATFORM_META_FILE = ".voiceagent-platform"
     }
 }
+

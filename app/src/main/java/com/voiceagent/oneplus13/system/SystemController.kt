@@ -2,15 +2,24 @@ package com.voiceagent.oneplus13.system
 
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.URL
+import okhttp3.Dns
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.net.InetAddress
+import java.net.Proxy
+import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
 
 /**
  * Facade over device-level actions the agent can take: launching apps, adjusting
@@ -48,8 +57,9 @@ class SystemController(private val context: Context) {
     private fun resolveByLabel(query: String): String? {
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val pm = context.packageManager
-        val candidates = pm.queryIntentActivities(launcherIntent, PackageManager.MATCH_DEFAULT_ONLY)
         val normalizedQuery = query.trim().lowercase()
+        if (normalizedQuery.isBlank()) return null
+        val candidates = pm.queryIntentActivities(launcherIntent, 0)
 
         // Сначала точное совпадение по названию, потом — частичное, чтобы
         // "Карты" не подтягивало случайно "Автокарты" раньше настоящих "Google Карты".
@@ -63,7 +73,11 @@ class SystemController(private val context: Context) {
     }
 
     fun openUrl(url: String) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        val uri = Uri.parse(url)
+        require(uri.scheme?.lowercase() in setOf("http", "https") && !uri.host.isNullOrBlank()) {
+            "Only http and https links are supported"
+        }
+        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
@@ -79,8 +93,14 @@ class SystemController(private val context: Context) {
 
     fun readScreen(): List<String> = AccessibilityAgent.instance?.dumpVisibleText() ?: emptyList()
 
-    fun swipeUp() {
-        AccessibilityAgent.instance?.swipe(x1 = 540f, y1 = 1600f, x2 = 540f, y2 = 400f)
+    suspend fun swipeUp(): Boolean {
+        val service = AccessibilityAgent.instance ?: return false
+        val metrics = context.resources.displayMetrics
+        if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0) return false
+        return service.swipe(
+            x1 = metrics.widthPixels * 0.5f, y1 = metrics.heightPixels * 0.8f,
+            x2 = metrics.widthPixels * 0.5f, y2 = metrics.heightPixels * 0.3f
+        )
     }
 
     /** What's currently playing, from any app with an active media session — null if
@@ -102,7 +122,8 @@ class SystemController(private val context: Context) {
         if (!mediaSessionReader.hasActiveSession(YANDEX_MUSIC_PACKAGE)) return false
         openApp(YANDEX_MUSIC_PACKAGE)
         delay(YANDEX_MUSIC_FOREGROUND_DELAY_MS) // дать экрану открыться/перерисоваться перед поиском кнопки
-        return LIKE_LABEL_CANDIDATES.any { tapByText(it) }
+        val service = AccessibilityAgent.instance ?: return false
+        return LIKE_LABEL_CANDIDATES.any { service.tapByExactText(it) }
     }
 
     /**
@@ -118,42 +139,106 @@ class SystemController(private val context: Context) {
      */
     suspend fun installApp(nameOrUrl: String): InstallOutcome {
         val trimmed = nameOrUrl.trim()
-        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-            openPlayStoreListing(trimmed)
-            return InstallOutcome.OpenedPlayStore
-        }
-        if (!trimmed.substringBefore("?").endsWith(".apk", ignoreCase = true)) {
-            // Не прямая ссылка на apk (например ссылка на страницу в Google Play или
-            // сторонний каталог) — безопаснее просто открыть её в браузере, чем гадать.
-            openUrl(trimmed)
-            return InstallOutcome.OpenedUrl
-        }
+        if (trimmed.isEmpty()) return InstallOutcome.Failed("Название приложения или ссылка пусты.")
         return try {
-            val apkFile = downloadApk(trimmed)
-            promptInstall(apkFile)
-            InstallOutcome.PromptedInstall
-        } catch (e: Exception) {
-            InstallOutcome.Failed(e.message ?: "download error")
+            if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+                openPlayStoreListing(trimmed)
+                InstallOutcome.OpenedPlayStore
+            } else if (!trimmed.substringBefore("?").endsWith(".apk", ignoreCase = true)) {
+                openUrl(trimmed)
+                InstallOutcome.OpenedUrl
+            } else if (!trimmed.startsWith("https://")) {
+                InstallOutcome.Failed("Для загрузки APK нужна ссылка HTTPS.")
+            } else if (!context.packageManager.canRequestPackageInstalls()) {
+                InstallOutcome.NeedsInstallPermission
+            } else {
+                val apkFile = downloadApk(trimmed)
+                promptInstall(apkFile)
+                InstallOutcome.PromptedInstall
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            InstallOutcome.Failed("Не удалось открыть установщик или скачать APK. Проверь интернет и системные ограничения.")
         }
     }
 
     private fun openPlayStoreListing(appName: String) {
-        val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=$appName"))
+        val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search").buildUpon().appendQueryParameter("q", appName).build())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         if (marketIntent.resolveActivity(context.packageManager) != null) {
             context.startActivity(marketIntent)
         } else {
-            openUrl("https://play.google.com/store/search?q=$appName")
+            openUrl(Uri.parse("https://play.google.com/store/search").buildUpon().appendQueryParameter("q", appName).toString())
         }
     }
 
     private suspend fun downloadApk(url: String): File = withContext(Dispatchers.IO) {
-        val dir = File(context.getExternalFilesDir(null), "downloads").apply { mkdirs() }
+        val dir = File(context.getExternalFilesDir(null) ?: throw java.io.IOException("No storage"), "downloads")
+        if (!dir.exists() && !dir.mkdirs()) throw java.io.IOException("Cannot create download directory")
         val file = File(dir, "download_${System.currentTimeMillis()}.apk")
-        URL(url).openStream().use { input ->
-            file.outputStream().use { output -> input.copyTo(output) }
+        // Check each DNS result at connection time and every redirect; do not let a
+        // model-supplied URL address local services or an HTTPS-to-HTTP redirect.
+        val dns = object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> = Dns.SYSTEM.lookup(hostname).also { addresses ->
+                if (addresses.isEmpty() || addresses.any { !isPublicDownloadAddress(it) })
+                    throw UnknownHostException("Local download address is not allowed")
+            }
         }
-        file
+        val client = OkHttpClient.Builder().dns(dns).proxy(Proxy.NO_PROXY)
+            .followRedirects(false).followSslRedirects(false)
+            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+        try {
+            // Only clean our own old downloads, long after the installer may have opened them.
+            dir.listFiles()?.filter { it.name.matches(Regex("download_[0-9]+\\.apk")) &&
+                it.lastModified() < System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 }?.forEach { it.delete() }
+            var currentUrl = url.toHttpUrl()
+            var redirects = 0
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                if (currentUrl.scheme != "https") throw java.io.IOException("HTTPS required")
+                val host = currentUrl.host
+                if ((host.contains(':') || host.all { it.isDigit() || it == '.' }) &&
+                    !isPublicDownloadAddress(InetAddress.getByName(host))) throw java.io.IOException("Local address")
+                val response = client.newCall(Request.Builder().url(currentUrl).get().build()).execute()
+                if (response.code in 300..399) {
+                    val location = response.header("Location")
+                    response.close()
+                    if (++redirects > 5 || location == null) throw java.io.IOException("Invalid redirect")
+                    currentUrl = currentUrl.resolve(location) ?: throw java.io.IOException("Invalid redirect")
+                    continue
+                }
+                response.use {
+                    if (!it.isSuccessful) throw java.io.IOException("Download failed")
+                    val body = it.body ?: throw java.io.IOException("Empty download")
+            val maxBytes = 250L * 1024 * 1024
+                    if (body.contentLength() > maxBytes) throw java.io.IOException("Download too large")
+            var total = 0L
+                    body.byteStream().use { input -> file.outputStream().use { output ->
+                val buffer = ByteArray(32 * 1024)
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > maxBytes) throw java.io.IOException("Download too large")
+                    output.write(buffer, 0, count)
+                }
+            } }
+                    // APK is a ZIP archive. Check signature without trusting Content-Type.
+                    val signature = file.inputStream().use { stream -> ByteArray(4).also { bytes ->
+                        if (stream.read(bytes) != 4) throw java.io.IOException("Invalid APK")
+                    } }
+                    if (!signature.contentEquals(byteArrayOf(0x50, 0x4b, 0x03, 0x04)))
+                        throw java.io.IOException("Invalid APK")
+                }
+                break
+            }
+            file
+        } catch (error: Exception) {
+            file.delete()
+            throw error
+        } finally { client.connectionPool.evictAll() }
     }
 
     private fun promptInstall(apkFile: File) {
@@ -169,6 +254,7 @@ class SystemController(private val context: Context) {
         object OpenedPlayStore : InstallOutcome()
         object OpenedUrl : InstallOutcome()
         object PromptedInstall : InstallOutcome()
+        object NeedsInstallPermission : InstallOutcome()
         data class Failed(val reason: String) : InstallOutcome()
     }
 
@@ -181,11 +267,10 @@ class SystemController(private val context: Context) {
         // пробуем несколько вариантов подряд, а не полагаемся на один точный текст.
         private val LIKE_LABEL_CANDIDATES = listOf(
             "Добавить в Мне нравится",
-            "Мне нравится",
-            "Убрать из Мне нравится",
             "Добавить в избранное",
-            "Like",
-            "Favorite"
+            "Add to favorites",
+            "Add to favourites"
         )
     }
 }
+

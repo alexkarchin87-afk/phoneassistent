@@ -2,6 +2,7 @@ package com.voiceagent.oneplus13.system
 
 import android.Manifest
 import android.content.Context
+import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
@@ -70,18 +71,17 @@ object Diagnostics {
     }
 
     private fun checkAccessibilityService(context: Context): DiagnosticCheck {
-        val enabled = isServiceEnabled(context, "com.voiceagent.oneplus13/.system.AccessibilityAgent")
+        val enabled = isServiceEnabled(context, ComponentName(context, AccessibilityAgent::class.java).flattenToShortString())
         return DiagnosticCheck(
             "Спец. возможности (Accessibility)",
             if (enabled) CheckStatus.OK else CheckStatus.FAIL,
-            if (enabled) "Включено" else "Без этого агент не сможет читать экран, нажимать кнопки и листать — " +
-                "команды вроде «что на экране» и «открой Х» работать не будут",
+            if (enabled) "Включено" else "Нужно для нажатий и свайпов. Если доступ заблокирован, открой сведения о приложении → ⋮ → «Разрешить ограниченные настройки».",
             fixSettingsAction = if (enabled) null else Settings.ACTION_ACCESSIBILITY_SETTINGS
         )
     }
 
     private fun checkNotificationListener(context: Context): DiagnosticCheck {
-        val enabled = isServiceEnabled(context, "com.voiceagent.oneplus13/.system.NotificationReader")
+        val enabled = isServiceEnabled(context, ComponentName(context, NotificationReader::class.java).flattenToShortString())
         return DiagnosticCheck(
             "Доступ к уведомлениям",
             if (enabled) CheckStatus.OK else CheckStatus.WARNING,
@@ -121,8 +121,7 @@ object Diagnostics {
         return DiagnosticCheck(
             "Ключ DeepSeek API",
             if (present) CheckStatus.OK else CheckStatus.FAIL,
-            if (present) "Задан" else "Без него агент не сможет ни понять команду, ни ответить — впиши ключ в " +
-                "local.properties перед сборкой или в Настройках → «Ключи»",
+            if (present) "Задан" else "Нужен для ответов ИИ. Введи ключ в разделе «Ключи ассистента». Время и дата доступны без него.",
             fixSettingsAction = null // это не системная настройка — чинится в самом приложении
         )
     }
@@ -144,22 +143,12 @@ object Diagnostics {
         context.assets.list("model-ru-small")?.isNotEmpty() == true
     }.getOrDefault(false)
 
-    private fun checkRootAccess(): DiagnosticCheck {
-        // Только проверяет доступность su — ничего не переключает и не меняет.
-        val hasRoot = try {
-            val exit = ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start().waitFor()
-            exit == 0
-        } catch (_: java.io.IOException) {
-            false
-        }
-        return DiagnosticCheck(
-            "Root-доступ (KernelSU/Magisk)",
-            if (hasRoot) CheckStatus.OK else CheckStatus.WARNING,
-            if (hasRoot) "Есть" else "Нет — команды вроде «выключи вайфай» через root работать не будут, " +
-                "остальное не пострадает",
-            fixSettingsAction = null
-        )
-    }
+    private fun checkRootAccess(): DiagnosticCheck = DiagnosticCheck(
+        "Root-доступ (KernelSU/Magisk)",
+        CheckStatus.WARNING,
+        "Проверяется при выполнении root-команды; для остальных функций не нужен.",
+        fixSettingsAction = null
+    )
 
     private fun isServiceEnabled(context: Context, flatComponentName: String): Boolean {
         val enabledServices = Settings.Secure.getString(
@@ -169,6 +158,7 @@ object Diagnostics {
             else
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
-        return enabledServices.split(":").any { it.equals(flatComponentName, ignoreCase = true) }
+        val expected = ComponentName.unflattenFromString(flatComponentName) ?: return false
+        return enabledServices.split(":").any { ComponentName.unflattenFromString(it) == expected }
     }
 }

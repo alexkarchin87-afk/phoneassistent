@@ -10,6 +10,7 @@ name: Build debug APK
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch: {}
 
 jobs:
@@ -27,22 +28,69 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Accept licenses and install SDK platform/build-tools
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.7'
+          gradle-version: '8.9'
 
       - name: Write local.properties (sdk.dir only — секреты НЕ коммитим)
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
+      - name: Prepare pinned local inference engine
+        run: bash scripts/prepare_llama.sh
+
+      - name: Run Android unit tests
+        run: gradle testDebugUnitTest --stacktrace
+
+      - name: Test model preparation
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Set up Python for backend tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run backend HTTP security tests
+        run: |
+          python3 -m pip install -r backend/requirements.txt httpx==0.27.2
+          python3 -m unittest discover -s backend -p 'test_*.py' -v
+
+      - name: Prepare offline Russian speech model
+        run: python3 scripts/prepare_vosk_model.py
+
       - name: Assemble debug APK
         run: gradle assembleDebug --stacktrace
+
+      - name: Verify minified release build
+        run: gradle assembleRelease --stacktrace
+
+      - name: Assemble local inference instrumentation tests
+        run: gradle assembleDebugAndroidTest --stacktrace
+
+      - name: Upload instrumentation APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceagent-local-tests
+          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+
+      - name: Verify model assets in APK
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/uuid'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/model-ru-small/am/final.mdl'
+          for abi in arm64-v8a x86_64; do
+            unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F "lib/$abi/libvoiceagent_local.so"
+            unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F "lib/$abi/libjnidispatch.so"
+          done
+          python3 -c 'import zipfile; p="app/build/outputs/apk/debug/app-debug.apk"; z=zipfile.ZipFile(p); assert b"CPU_KLEIDIAI" in z.read("lib/arm64-v8a/libvoiceagent_local.so"), "ARM acceleration missing"'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -50,3 +98,70 @@ jobs:
           name: voiceagent-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Build separate recovery APK
+        run: gradle assembleRecovery --stacktrace
+
+      - name: Verify recovery native libraries
+        run: |
+          for abi in arm64-v8a x86_64; do
+            unzip -l app/build/outputs/apk/recovery/app-recovery.apk | grep -F "lib/$abi/libjnidispatch.so"
+          done
+
+      - name: Upload separate recovery APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceagent-recovery-apk
+          path: app/build/outputs/apk/recovery/app-recovery.apk
+          if-no-files-found: error
+
+
+  smoke:
+    name: Launch on Android emulator
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: voiceagent-debug-apk
+          path: smoke-apk
+      - uses: actions/download-artifact@v4
+        with:
+          name: voiceagent-recovery-apk
+          path: recovery-apk
+      - uses: actions/download-artifact@v4
+        with:
+          name: voiceagent-local-tests
+          path: local-tests
+      - name: Download tiny model for native inference test
+        run: curl --fail --location --retry 3 -o tiny.gguf https://huggingface.co/ggml-org/tiny-llamas/resolve/def3e2dd70df35ecbf6403ea347de4c5977220c1/stories260K.gguf
+      - name: Download small Qwen 3.5 test model
+        run: |
+          curl --fail --location --retry 3 -o qwen35.gguf https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf
+          echo "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf  qwen35.gguf" | sha256sum -c -
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Launch application and check registration-free settings
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            python3 scripts/android_smoke.py smoke-apk/app-debug.apk
+            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.eco python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
+            adb shell run-as com.voiceagent.oneplus13 ls files/smoke_data_kept
+            adb push tiny.gguf /data/local/tmp/voiceagent-tiny.gguf
+            adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-tiny.gguf files/tiny.gguf
+            adb push qwen35.gguf /data/local/tmp/voiceagent-qwen35.gguf
+            adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-qwen35.gguf files/qwen35.gguf
+            adb shell rm /data/local/tmp/voiceagent-qwen35.gguf
+            adb install -r local-tests/app-debug-androidTest.apk
+            adb shell am instrument -w com.voiceagent.oneplus13.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.log
+            grep -F "OK (4 tests)" instrument.log || { adb logcat -d -v brief | tail -250; exit 1; }

@@ -9,3 +9,8 @@
 .cxx
 local.properties
 backend/.env
+/app/src/main/assets/model-ru-small/
+
+/.llama.cpp/
+__pycache__/
+*.py[cod]

@@ -5,12 +5,12 @@ import android.app.RemoteInput
 import android.content.Intent
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.voiceagent.oneplus13.core.AgentEvent
-import com.voiceagent.oneplus13.core.AgentEventBus
 import com.voiceagent.oneplus13.core.security.SecretsStore
 import com.voiceagent.oneplus13.integrations.messenger.TokenCapture
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
@@ -28,17 +28,11 @@ import kotlinx.coroutines.launch
  */
 class NotificationReader : NotificationListenerService() {
 
-    private val scope = CoroutineScope(Job())
-    private lateinit var tokenCapture: TokenCapture
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val tokenCapture by lazy { TokenCapture(SecretsStore(applicationContext)) }
 
-    /** Последнее уведомление с доступным быстрым ответом на отправителя (ключ —
-     *  заголовок уведомления в нижнем регистре, обычно это имя собеседника). */
-    private val replyableBySender = HashMap<String, StatusBarNotification>()
-
-    override fun onCreate() {
-        super.onCreate()
-        tokenCapture = TokenCapture(SecretsStore(applicationContext))
-    }
+    private data class ReplyTarget(val title: String, val action: android.app.Notification.Action)
+    private val replyableBySender = java.util.concurrent.ConcurrentHashMap<String, ReplyTarget>()
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -46,46 +40,51 @@ class NotificationReader : NotificationListenerService() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
+        replyableBySender.clear()
         if (instance === this) instance = null
         super.onDestroy()
     }
 
+    override fun onListenerDisconnected() {
+        replyableBySender.clear()
+        if (instance === this) instance = null
+        super.onListenerDisconnected()
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (sbn.packageName !in REPLY_PACKAGES) return
+        // An updated notification may have lost its reply action or become sensitive.
+        replyableBySender.remove(sbn.key)
         val extras = sbn.notification.extras
         val title = extras.getCharSequence("android.title")?.toString().orEmpty()
         val text = extras.getCharSequence("android.text")?.toString().orEmpty()
         if (title.isBlank() && text.isBlank()) return
 
-        if (findReplyAction(sbn) != null) {
-            replyableBySender[title.trim().lowercase()] = sbn
+        val project = PendingProject.awaitingTokenFor
+        val tokenCandidate = project != null && TokenCapture.isCandidate(sbn.packageName, title)
+        val sensitive = SENSITIVE.containsMatchIn("$title $text")
+        if (!sensitive) {
+            findReplyAction(sbn)?.let { action ->
+                replyableBySender[sbn.key] = ReplyTarget(title.trim(), action)
+                if (replyableBySender.size > 100) replyableBySender.keys.firstOrNull()?.let { replyableBySender.remove(it) }
+            }
         }
 
-        scope.launch {
-            val handledAsToken = tokenCapture.onNotification(
-                packageName = sbn.packageName,
-                title = title,
-                text = text,
-                forProjectName = PendingProject.awaitingTokenFor
-            )
-            if (handledAsToken) return@launch
-
-            NotificationBuffer.record(NotificationEntry(sbn.packageName, title, text))
-
-            AgentEventBus.publish(
-                AgentEvent.ActionRequested(
-                    action = "notification_received",
-                    params = mapOf(
-                        "package" to sbn.packageName,
-                        "title" to title,
-                        "text" to text
-                    )
-                )
-            )
+        if (tokenCandidate) {
+            val source = sbn.packageName
+            scope.launch {
+                if (!tokenCapture.onNotification(source, title, text, project) && !sensitive) {
+                    NotificationBuffer.record(source)
+                }
+            }
+        } else if (!sensitive) {
+            NotificationBuffer.record(sbn.packageName)
         }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        replyableBySender.entries.removeAll { it.value.key == sbn.key }
+        replyableBySender.remove(sbn.key)
     }
 
     /** "Ответь Вике привет" — находит уведомление от отправителя, чьё имя
@@ -97,9 +96,13 @@ class NotificationReader : NotificationListenerService() {
      */
     fun replyTo(senderNameQuery: String, text: String): Boolean {
         val q = senderNameQuery.trim().lowercase()
-        val entry = replyableBySender.entries.firstOrNull { it.key.contains(q) } ?: return false
-        val sbn = entry.value
-        val action = findReplyAction(sbn) ?: return false
+        if (q.isBlank()) return false
+        // A single exact match from a known messenger is required; ambiguity fails closed.
+        val entry = replyableBySender.entries.filter {
+            it.value.title.equals(q, ignoreCase = true)
+        }.singleOrNull() ?: return false
+        val target = entry.value
+        val action = target.action
         val remoteInputs = action.remoteInputs ?: return false
 
         val intent = Intent()
@@ -109,7 +112,7 @@ class NotificationReader : NotificationListenerService() {
 
         return try {
             action.actionIntent.send(applicationContext, 0, intent)
-            replyableBySender.remove(entry.key)
+            replyableBySender.remove(entry.key, target)
             true
         } catch (_: PendingIntent.CanceledException) {
             false
@@ -120,9 +123,12 @@ class NotificationReader : NotificationListenerService() {
         sbn.notification.actions?.firstOrNull { !it.remoteInputs.isNullOrEmpty() }
 
     companion object {
+        private val REPLY_PACKAGES = setOf("org.telegram.messenger", "org.telegram.messenger.web",
+            "com.whatsapp", "com.whatsapp.w4b", "com.discord")
+        private val SENSITIVE = Regex("(?i)(код|парол|банк|карт[аы]|плат[её]ж|otp|password|verification|\\b[0-9]{4,8}\\b)")
         /** Живой экземпляр запущенного слушателя — так же, как AccessibilityAgent.instance,
          *  чтобы AgentOrchestrator мог дёрнуть replyTo() без биндинга сервиса. */
-        var instance: NotificationReader? = null
+        @Volatile var instance: NotificationReader? = null
     }
 }
 
@@ -130,5 +136,6 @@ class NotificationReader : NotificationListenerService() {
  *  project that needs a bot token, so NotificationReader knows which project a
  *  freshly-seen BotFather token belongs to. Cleared once the token is consumed. */
 object PendingProject {
-    var awaitingTokenFor: String? = null
+    @Volatile var awaitingTokenFor: String? = null
 }
+

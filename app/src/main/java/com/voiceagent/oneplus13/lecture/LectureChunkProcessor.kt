@@ -1,13 +1,16 @@
 package com.voiceagent.oneplus13.lecture
 
 /**
- * Cleans and appends raw STT output to a session. Kept separate from LectureRecorder
+ * Cleans and appends raw STT output to a session. Kept separate from LectureCapture
  * so filtering rules (drop filler words, merge sentence fragments) can evolve without
  * touching the audio pipeline.
  */
 class LectureChunkProcessor {
 
-    private val fillerWords = setOf("э-э", "ну", "как бы", "типа")
+    private val fillerPatterns = listOf("э-э", "ну", "как бы", "типа").map {
+        Regex("(?i)(?<![\\p{L}\\p{N}_])${Regex.escape(it)}(?![\\p{L}\\p{N}_])")
+    }
+    private val whitespace = Regex("\\s+")
 
     fun process(session: LectureSession, rawChunk: String) {
         val cleaned = clean(rawChunk)
@@ -16,9 +19,9 @@ class LectureChunkProcessor {
 
     private fun clean(text: String): String {
         var result = text.trim()
-        fillerWords.forEach { filler ->
-            result = result.replace(Regex("(?i)\\b$filler\\b"), "")
+        fillerPatterns.forEach { pattern ->
+            result = result.replace(pattern, "")
         }
-        return result.replace(Regex("\\s+"), " ").trim()
+        return result.replace(whitespace, " ").trim()
     }
 }

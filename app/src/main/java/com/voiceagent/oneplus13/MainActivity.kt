@@ -1,27 +1,33 @@
 package com.voiceagent.oneplus13
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.ServiceConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import com.voiceagent.oneplus13.account.AccountGateScreen
-import com.voiceagent.oneplus13.account.AccountManager
 import com.voiceagent.oneplus13.core.VoiceAgentService
 import com.voiceagent.oneplus13.overlay.OverlayBubbleController
 import com.voiceagent.oneplus13.ui.AgentControls
@@ -33,7 +39,7 @@ import com.voiceagent.oneplus13.ui.workflow.WorkflowEditorActivity
 /**
  * Точка входа. Реального взаимодействия с агентом здесь минимум — это делает
  * VoiceAgentService (голос) и AgentOrchestrator (логика). Activity отвечает
- * за: замок входа через Google (см. account/), запуск/остановку
+ * за: запуск/остановку
  * foreground-сервиса, привязку к нему (чтобы прокинуть набранный вручную
  * текст в тот же оркестратор), системные разрешения и (де)активацию
  * системного оверлей-пузыря (см. overlay/OverlayBubbleController.kt).
@@ -43,30 +49,24 @@ class MainActivity : ComponentActivity() {
     private var binder: VoiceAgentService.LocalBinder? by mutableStateOf(null)
     private var isAgentRunning by mutableStateOf(false)
 
-    private val accountManager by lazy { AccountManager(this) }
-    private var signedInEmail: String? by mutableStateOf(null)
-    private var gateUnlocked by mutableStateOf(false)
-    private var signInError: String? by mutableStateOf(null)
+    private var serviceBound = false
 
-    private val signInLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        when (val signInResult = accountManager.handleSignInResult(result.data)) {
-            is com.voiceagent.oneplus13.account.SignInResult.Success -> {
-                signedInEmail = signInResult.account?.email ?: accountManager.ownerEmail()
-                signInError = null
-                // Свежий вход (не восстановленный из кэша) сразу пускает внутрь —
-                // повторное подтверждение нужно только при холодном старте с уже
-                // закэшированным аккаунтом (см. AccountGateScreen: "Продолжить").
-                if (signInResult.account != null) gateUnlocked = true
-            }
-            is com.voiceagent.oneplus13.account.SignInResult.Failure -> {
-                signInError = signInResult.message
-            }
+    private val agentPermissions = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+            startVoiceAgentWithPermission()
+        } else {
+            isAgentRunning = false
+            Toast.makeText(this, "Для голосового режима разреши доступ к микрофону.", Toast.LENGTH_LONG).show()
         }
     }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             binder = service as? VoiceAgentService.LocalBinder
+            isAgentRunning = binder != null
             // Если пользователь раньше включил оверлей, а сервис только что
             // (пере)запустился — досинхронизируем фактическое состояние пузыря.
             if (UiPreferences(this@MainActivity).overlayEnabled) {
@@ -76,63 +76,82 @@ class MainActivity : ComponentActivity() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             binder = null
+            isAgentRunning = false
+        }
+
+        override fun onNullBinding(name: ComponentName?) {
+            binder = null
+            isAgentRunning = false
+            if (serviceBound) { unbindService(this); serviceBound = false }
+            Toast.makeText(this@MainActivity, "Не удалось запустить сервис. Проверь разрешения и попробуй снова.", Toast.LENGTH_LONG).show()
         }
     }
 
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        signedInEmail = accountManager.ownerEmail()
+        enableEdgeToEdge()
 
         // Если сервис уже был запущен раньше (например, после перезапуска
         // Activity), просто привязываемся к нему без повторного старта.
-        if (isServiceRunning()) {
-            isAgentRunning = true
+        if (VoiceAgentService.startedInThisProcess) {
             bindToService()
         }
 
         setContent {
+            var interrupted by androidx.compose.runtime.remember { mutableStateOf((application as VoiceAgentApp).takeInterruptedStartup()) }
             val windowSizeClass = calculateWindowSizeClass(this)
 
             VoiceAgentTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    if (!gateUnlocked) {
-                        AccountGateScreen(
-                            signedInEmail = signedInEmail,
-                            errorMessage = signInError,
-                            onSignInClick = { signInLauncher.launch(accountManager.signInIntent) },
-                            onContinueClick = { gateUnlocked = true },
-                            onSignOutClick = {
-                                accountManager.signOut { signedInEmail = null }
-                            },
-                            onSkipClick = { gateUnlocked = true }
+                    if (interrupted != null) {
+                        AlertDialog(
+                            onDismissRequest = { interrupted = null },
+                            title = { Text("Предыдущий запуск прервался") },
+                            text = { Text("Этап: ${interrupted.orEmpty()}. Настройки и ключи сохранены. Открой настройки и отправь лог последнего сбоя разработчику, если он доступен.") },
+                            confirmButton = { TextButton(onClick = { interrupted = null }) { Text("Понятно") } }
                         )
-                    } else {
-                        MainScreen(
+                    }
+                    MainScreen(
                             windowSizeClass = windowSizeClass,
                             controls = AgentControls(
                                 isAgentRunning = isAgentRunning,
                                 onStartAgent = ::startVoiceAgent,
                                 onStopAgent = ::stopVoiceAgent,
-                                onSendText = { text -> binder?.sendText(text) },
+                                onSendText = { text ->
+                                    val activeBinder = binder
+                                    if (activeBinder == null) Toast.makeText(this, "Агент ещё запускается. Попробуй через несколько секунд.", Toast.LENGTH_SHORT).show()
+                                    else activeBinder.sendText(text)
+                                },
                                 onOpenAccessibilitySettings = {
-                                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                    openSystemSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                                 },
                                 onOpenNotificationSettings = {
-                                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                    openSystemSettings(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                                 },
                                 onOpenBatterySettings = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                        openSystemSettings(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                                     }
                                 },
                                 onOpenAppSettings = {
                                     startActivity(Intent(this, SettingsActivity::class.java))
                                 },
+                                onOpenSystemAppInfo = {
+                                    openSystemSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", packageName, null)))
+                                },
+                                onOpenInstallSettings = {
+                                    runCatching {
+                                        startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                            Uri.fromParts("package", packageName, null)))
+                                    }.onFailure {
+                                        Toast.makeText(this, "Не удалось открыть настройки установки APK.", Toast.LENGTH_LONG).show()
+                                    }
+                                },
                                 canDrawOverlays = { OverlayBubbleController.canDrawOverlays(this) },
                                 onRequestOverlayPermission = {
-                                    startActivity(OverlayBubbleController.overlayPermissionIntent(this))
+                                    openSystemSettings(OverlayBubbleController.overlayPermissionIntent(this))
                                 },
                                 isOverlayEnabled = {
                                     UiPreferences(this).overlayEnabled
@@ -158,22 +177,53 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         )
-                    }
                 }
             }
         }
     }
 
+    private fun openSystemSettings(intent: Intent) {
+        runCatching { startActivity(intent) }.onFailure {
+            Toast.makeText(this, "Не удалось открыть системные настройки.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun startVoiceAgent() {
+        val needed = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (needed.isNotEmpty()) {
+            agentPermissions.launch(needed.toTypedArray())
+        } else {
+            startVoiceAgentWithPermission()
+        }
+    }
+
+    private fun startVoiceAgentWithPermission() {
         val intent = Intent(this, VoiceAgentService::class.java)
-        startForegroundService(intent)
-        bindToService()
-        isAgentRunning = true
+        try {
+            ContextCompat.startForegroundService(this, intent)
+            bindToService()
+        } catch (error: SecurityException) {
+            isAgentRunning = false
+            Toast.makeText(this, "Не удалось запустить микрофон. Проверь разрешения приложения.", Toast.LENGTH_LONG).show()
+        } catch (error: IllegalStateException) {
+            isAgentRunning = false
+            Toast.makeText(this, "Не удалось запустить сервис. Попробуй ещё раз из приложения.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun stopVoiceAgent() {
-        if (binder != null) {
+        if (serviceBound) {
             unbindService(connection)
+            serviceBound = false
             binder = null
         }
         stopService(Intent(this, VoiceAgentService::class.java))
@@ -181,19 +231,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun bindToService() {
-        bindService(Intent(this, VoiceAgentService::class.java), connection, Context.BIND_AUTO_CREATE)
-    }
-
-    private fun isServiceRunning(): Boolean {
-        val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
-        @Suppress("DEPRECATION")
-        return manager.getRunningServices(Int.MAX_VALUE)
-            .any { it.service.className == VoiceAgentService::class.java.name }
+        if (!serviceBound) {
+            serviceBound = bindService(Intent(this, VoiceAgentService::class.java), connection, Context.BIND_AUTO_CREATE)
+            if (!serviceBound) Toast.makeText(this, "Не удалось подключиться к сервису.", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onDestroy() {
-        if (binder != null) {
+        if (serviceBound) {
             runCatching { unbindService(connection) }
+            serviceBound = false
         }
         super.onDestroy()
     }

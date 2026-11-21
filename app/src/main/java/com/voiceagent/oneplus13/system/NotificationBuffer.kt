@@ -1,31 +1,28 @@
 package com.voiceagent.oneplus13.system
 
-/** Одна запись из шторки уведомлений: пакет-источник, заголовок, текст, время. */
-data class NotificationEntry(
-    val packageName: String,
-    val title: String,
-    val text: String,
-    val timestampMillis: Long = System.currentTimeMillis()
-)
-
-/**
- * Кольцевой буфер последних уведомлений — процесс-wide, наполняется из
- * [NotificationReader]. Нужен, чтобы на "что нового?"/"прочитай уведомления"
- * агент мог ответить по факту увиденного в шторке, а не выдумывать ответ:
- * до этого буфера каждое уведомление публиковалось в AgentEventBus по
- * отдельности и тут же терялось, если никто не слушал именно в этот момент.
- */
+/** The spoken digest uses only counts by sender app. Never retain notification text here. */
 object NotificationBuffer {
     private const val MAX_ENTRIES = 200
-    private val entries = ArrayDeque<NotificationEntry>()
+    private val packages = ArrayDeque<String>()
+    private var sequence = 0L
+
+    data class Snapshot(val sequence: Long, val counts: Map<String, Int>)
 
     @Synchronized
-    fun record(entry: NotificationEntry) {
-        entries.addLast(entry)
-        while (entries.size > MAX_ENTRIES) entries.removeFirst()
+    fun record(packageName: String) {
+        if (packages.size == MAX_ENTRIES) packages.removeFirst()
+        packages.addLast(packageName)
+        sequence++
     }
 
     @Synchronized
-    fun entriesSince(timestampMillis: Long): List<NotificationEntry> =
-        entries.filter { it.timestampMillis > timestampMillis }
+    fun since(previous: Long): Snapshot {
+        val count = (sequence - previous).coerceIn(0L, packages.size.toLong()).toInt()
+        val counts = mutableMapOf<String, Int>()
+        for (i in packages.size - count until packages.size) {
+            val source = packages[i]
+            counts[source] = counts.getOrDefault(source, 0) + 1
+        }
+        return Snapshot(sequence, counts)
+    }
 }

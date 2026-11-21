@@ -1,6 +1,8 @@
 package com.voiceagent.oneplus13.core
 
 import android.content.Context
+import com.voiceagent.oneplus13.local.LocalInference
+import com.voiceagent.oneplus13.local.LocalModelManager
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
@@ -8,19 +10,19 @@ import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.voiceagent.oneplus13.BuildConfig
 import com.voiceagent.oneplus13.core.security.SecretsStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 data class ChatMessage(val role: String, val content: String)
 
 // DeepSeek — OpenAI-совместимый формат: system идёт первым сообщением в messages.
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekRequest(
     val model: String,
     val messages: List<ChatMessage>,
@@ -28,15 +30,15 @@ private data class DeepSeekRequest(
     val stream: Boolean = false
 )
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekChoice(val message: ChatMessage)
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class DeepSeekResponse(@Json(name = "choices") val choices: List<DeepSeekChoice>)
 
 // Claude (Anthropic Messages API) — другой формат: system — отдельное поле,
 // а не сообщение с role="system" внутри messages.
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeRequest(
     val model: String,
     @Json(name = "max_tokens") val maxTokens: Int,
@@ -44,26 +46,20 @@ private data class ClaudeRequest(
     val messages: List<ChatMessage>
 )
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeContentBlock(val type: String, val text: String? = null)
 
-@JsonClass(generateAdapter = true)
+@JsonClass(generateAdapter = false)
 private data class ClaudeResponse(val content: List<ClaudeContentBlock>)
 
 /**
  * "Мозг" за AgentOrchestrator: превращает транскрипт + контекст либо в
  * голосовой ответ, либо в структурированный запрос на действие.
  *
- * Никакого ручного выбора "головы" в Настройках нет — маршрутизация
- * автоматическая, по сложности конкретного запроса:
- *
- * - Простой запрос -> только DeepSeek-chat (V3), один вызов, быстро и дёшево.
- * - Сложный запрос (см. [isComplexTask], либо вызывающий код явно попросил
- *   через [forceComplex] — так делает генерация кода) -> сперва черновик
- *   от DeepSeek-R1 (сильнее рассуждает, но медленнее), а если в Настройках
- *   есть ключ Claude — черновик уходит на проверку/исправление ошибок в
- *   Claude, и уже её ответ возвращается как финальный. Если ключа Claude
- *   нет — просто возвращаем черновик R1, деградация без ошибки.
+ * Режим ответа задаёт пользователь: быстрый использует DeepSeek-chat, а
+ * вдумчивый — DeepSeek-reasoner с необязательной проверкой Claude. Выбор
+ * локальной модели не отправляет запросы в облако. Генерация кода может
+ * отдельно запросить сложный облачный маршрут через forceComplex.
  *
  * Предпочитает ключи, введённые в Настройках (SecretsStore), над тем, что
  * зашито в local.properties при сборке — так их можно сменить без пересборки.
@@ -74,22 +70,25 @@ class LLMClient(
     context: Context? = null,
     private val maxRetries: Int = 2
 ) {
-    private val secrets = context?.let { SecretsStore(it) }
+    private val secrets by lazy { context?.let { SecretsStore(it.applicationContext) } }
+    private val responseMode = context?.let { ResponseMode(it) }
+    private val local = context?.let { LocalModelManager(it) }
 
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
-
-    private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
-    private val deepSeekRequestAdapter = moshi.adapter(DeepSeekRequest::class.java)
-    private val deepSeekResponseAdapter = moshi.adapter(DeepSeekResponse::class.java)
-    private val claudeRequestAdapter = moshi.adapter(ClaudeRequest::class.java)
-    private val claudeResponseAdapter = moshi.adapter(ClaudeResponse::class.java)
+    private object Cloud {
+        val http = OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+        private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+        val deepSeekRequestAdapter = moshi.adapter(DeepSeekRequest::class.java)
+        val deepSeekResponseAdapter = moshi.adapter(DeepSeekResponse::class.java)
+        val claudeRequestAdapter = moshi.adapter(ClaudeRequest::class.java)
+        val claudeResponseAdapter = moshi.adapter(ClaudeResponse::class.java)
+    }
+    private val transport by lazy { RetryingHttpClient(Cloud.http, maxRetries) }
 
     /**
-     * @param forceComplex — не полагаться на автоопределение и сразу считать
-     *   задачу сложной (R1 + проверка Claude). Используется генерацией кода
+     * @param forceComplex — считать облачную задачу сложной (R1 + проверка Claude). Используется генерацией кода
      *   ([com.voiceagent.oneplus13.devassist.CodeGenAgent]) — там цена ошибки
      *   выше, чем цена лишнего вызова.
      */
@@ -99,7 +98,14 @@ class LLMClient(
         userText: String,
         forceComplex: Boolean = false
     ): String = withContext(Dispatchers.IO) {
-        val complex = forceComplex || isComplexTask(userText)
+        val thoughtful = responseMode?.thoughtful == true
+        if (local?.isLocal == true) {
+            check(local.ready) { "LOCAL_MODEL_MISSING" }
+            val uri = local.selectedUri
+            return@withContext if (uri != null) LocalInference.completeUri(local.contextForInference, uri, systemPrompt, history, userText, thoughtful)
+            else LocalInference.complete(local.contextForInference, local.modelFile.absolutePath, systemPrompt, history, userText, if (thoughtful) 1536 else 384, thoughtful)
+        }
+        val complex = forceComplex || thoughtful
         val draftModel = if (complex) "deepseek-reasoner" else "deepseek-chat"
         val draft = completeDeepSeek(draftModel, systemPrompt, history, userText)
 
@@ -110,27 +116,14 @@ class LLMClient(
 
         // Проверка черновика — best effort: если у Claude сбой (сеть, лимит,
         // невалидный ключ), не роняем весь ответ, а тихо отдаём черновик R1.
-        runCatching { reviewWithClaude(claudeKey, systemPrompt, userText, draft) }
-            .getOrDefault(draft)
-    }
-
-    /**
-     * Грубая, но дешёвая (без лишнего сетевого вызова) эвристика сложности.
-     * Смысл не в идеальной точности, а в том, чтобы не гонять каждое "привет"
-     * через R1 + Claude — это медленнее и дороже без видимой пользы.
-     */
-    private fun isComplexTask(userText: String): Boolean {
-        val normalized = userText.lowercase()
-        val complexSignals = listOf(
-            "почему", "объясни", "докажи", "вычисли", "посчитай", "сравни",
-            "спланируй", "оптимизируй", "алгоритм", "архитектур", "почини",
-            "исправь ошибку", "проанализируй", "стратеги", "разбер"
-        )
-        val hasComplexSignal = complexSignals.any { normalized.contains(it) }
-        val isLong = userText.length > 220
-        val hasMultipleSteps = Regex("(затем|после этого|и потом|шаг \\d|во-первых|во-вторых)")
-            .containsMatchIn(normalized)
-        return hasComplexSignal || isLong || hasMultipleSteps
+        try {
+            reviewWithClaude(claudeKey, systemPrompt, userText, draft)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.w("LLMClient", "Claude review failed; using DeepSeek response", error)
+            draft
+        }
     }
 
     /**
@@ -141,6 +134,7 @@ class LLMClient(
      */
     suspend fun askClaudeDirect(systemPrompt: String, history: List<ChatMessage>, userText: String): String =
         withContext(Dispatchers.IO) {
+            if (local?.isLocal == true) error("LOCAL_CLAUDE_DISABLED")
             val claudeKey = secrets?.get(SecretsStore.KEY_CLAUDE_API_KEY).orEmpty()
             if (claudeKey.isBlank()) {
                 // Деградация: нет ключа Claude в Настройках — не роняем команду,
@@ -148,7 +142,7 @@ class LLMClient(
                 return@withContext complete(systemPrompt, history, userText, forceComplex = true)
             }
 
-            val body = claudeRequestAdapter.toJson(
+            val body = Cloud.claudeRequestAdapter.toJson(
                 ClaudeRequest(
                     model = "claude-sonnet-5",
                     maxTokens = 8192,
@@ -164,12 +158,12 @@ class LLMClient(
                 .post(body)
                 .build()
 
-            executeWithRetry(request) { json ->
-                claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
+            transport.execute(request) { json ->
+                Cloud.claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
             }
         }
 
-    private fun completeDeepSeek(model: String, systemPrompt: String, history: List<ChatMessage>, userText: String): String {
+    private suspend fun completeDeepSeek(model: String, systemPrompt: String, history: List<ChatMessage>, userText: String): String {
         val apiKey = secrets?.getOrDefault(SecretsStore.KEY_DEEPSEEK_API_KEY, BuildConfig.DEEPSEEK_API_KEY)
             ?: BuildConfig.DEEPSEEK_API_KEY
         require(apiKey.isNotBlank()) { "DeepSeek API key is not set (see Settings or local.properties)" }
@@ -179,7 +173,7 @@ class LLMClient(
             addAll(history)
             add(ChatMessage("user", userText))
         }
-        val body = deepSeekRequestAdapter.toJson(DeepSeekRequest(model = model, messages = messages))
+        val body = Cloud.deepSeekRequestAdapter.toJson(DeepSeekRequest(model = model, messages = messages))
             .toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("https://api.deepseek.com/v1/chat/completions")
@@ -187,13 +181,13 @@ class LLMClient(
             .post(body)
             .build()
 
-        return executeWithRetry(request) { json ->
-            deepSeekResponseAdapter.fromJson(json)?.choices?.firstOrNull()?.message?.content
+        return transport.execute(request) { json ->
+            Cloud.deepSeekResponseAdapter.fromJson(json)?.choices?.firstOrNull()?.message?.content
         }
     }
 
     /** Не отвечает "с нуля" — проверяет и правит черновик от DeepSeek-R1. */
-    private fun reviewWithClaude(apiKey: String, originalSystemPrompt: String, userText: String, draft: String): String {
+    private suspend fun reviewWithClaude(apiKey: String, originalSystemPrompt: String, userText: String, draft: String): String {
         val reviewSystem = """
             $originalSystemPrompt
 
@@ -210,7 +204,7 @@ class LLMClient(
         """.trimIndent()
 
         val reviewUserText = "Запрос пользователя: $userText\n\nЧерновой ответ на проверку:\n$draft"
-        val body = claudeRequestAdapter.toJson(
+        val body = Cloud.claudeRequestAdapter.toJson(
             ClaudeRequest(
                 model = "claude-sonnet-5",
                 maxTokens = 8192,
@@ -226,33 +220,10 @@ class LLMClient(
             .post(body)
             .build()
 
-        return executeWithRetry(request) { json ->
-            claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
+        return transport.execute(request) { json ->
+            Cloud.claudeResponseAdapter.fromJson(json)?.content?.firstOrNull { it.type == "text" }?.text
         }
     }
 
-    private fun executeWithRetry(request: Request, extract: (String) -> String?): String {
-        var lastError: Exception? = null
-        repeat(maxRetries + 1) { attempt ->
-            try {
-                http.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        val retryable = resp.code == 429 || resp.code in 500..599
-                        if (retryable && attempt < maxRetries) {
-                            lastError = IOException("Retryable LLM error ${resp.code}")
-                            return@use
-                        }
-                        throw IllegalStateException("LLM request failed: ${resp.code} ${resp.message}")
-                    }
-                    val json = resp.body?.string().orEmpty()
-                    return extract(json) ?: throw IllegalStateException("Empty LLM response")
-                }
-            } catch (e: IOException) {
-                lastError = e
-            }
-            if (attempt < maxRetries) Thread.sleep(500L * (attempt + 1))
-        }
-        throw lastError ?: IllegalStateException("LLM request failed after retries")
-    }
 }
 

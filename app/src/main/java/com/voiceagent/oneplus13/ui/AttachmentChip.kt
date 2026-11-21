@@ -3,22 +3,24 @@ package com.voiceagent.oneplus13.ui
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import java.io.File
 
@@ -32,24 +34,24 @@ import java.io.File
 @Composable
 fun AttachmentChip(label: String, path: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(14.dp)
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black.copy(alpha = 0.06f))
+            .clip(shape)
+            .background(cs.surfaceContainerHigh)
+            .border(1.dp, cs.outlineVariant, shape)
             .clickable { openZipFile(context, path) }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(start = 10.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text("📦", fontSize = 14.sp)
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-        Spacer(modifier = Modifier.width(10.dp))
-        Text(
-            "Поделиться",
-            fontSize = 11.sp,
-            color = Color.Gray,
-            modifier = Modifier.clickable { shareZipFile(context, path) }
-        )
+        Icon(VaIcons.File, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+        Spacer(modifier = Modifier.width(4.dp))
+        IconButton(onClick = { shareZipFile(context, path) }, modifier = Modifier.size(32.dp)) {
+            Icon(VaIcons.Share, contentDescription = "Поделиться", tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        }
     }
 }
 

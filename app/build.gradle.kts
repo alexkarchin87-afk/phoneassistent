@@ -22,19 +22,27 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
 
-        buildConfigField("String", "DEEPSEEK_API_KEY", "\"${localProps.getProperty("DEEPSEEK_API_KEY", "")}\"")
-        buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"${localProps.getProperty("TELEGRAM_BOT_TOKEN", "")}\"")
-        buildConfigField("String", "MAX_SERVICE_TOKEN", "\"${localProps.getProperty("MAX_SERVICE_TOKEN", "")}\"")
+        buildConfigField("String", "DEEPSEEK_API_KEY", "\"\"")
+        buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"\"")
+        buildConfigField("String", "MAX_SERVICE_TOKEN", "\"\"")
         buildConfigField("String", "MAX_COMMUNITY_ID", "\"${localProps.getProperty("MAX_COMMUNITY_ID", "")}\"")
     }
 
     buildTypes {
+        create("recovery") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".eco"
+            matchingFallbacks += listOf("debug")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -51,6 +59,13 @@ android {
 }
 
 dependencies {
+    // Tink references these annotations; keep them available to R8 in release builds.
+    implementation("com.google.errorprone:error_prone_annotations:2.28.0")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -69,7 +84,12 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    implementation(libs.vosk.android)
+    implementation(libs.vosk.android) {
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    // Vosk's published POM resolves the desktop JNA jar by default; Android
+    // requires the AAR so libjnidispatch.so is bundled for each device ABI.
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
@@ -79,5 +99,5 @@ dependencies {
     implementation(libs.moshi.kotlin)
     implementation(libs.okhttp.logging)
     implementation(libs.androidx.security.crypto)
-    implementation(libs.play.services.auth)
 }
+
