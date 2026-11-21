@@ -99,14 +99,14 @@ class SettingsActivity : ComponentActivity() {
     private val importLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@registerForActivityResult
         val tmp = File(cacheDir, "voiceagent_import.json")
-        val ok = runCatching {
+        val ok = try { runCatching {
             contentResolver.openInputStream(uri)?.use { input ->
                 tmp.outputStream().use { output -> input.copyTo(output) }
             }
             BackupManager(this).importBackup(tmp)
-        }.getOrDefault(false)
+        }.getOrDefault(false) } finally { tmp.delete() }
         importMessage = if (ok) {
-            "Настройки импортированы. Если агент был запущен — перезапустите его, чтобы всё применилось."
+            "Настройки импортированы. API-ключи и токены из файла не восстанавливаются — введи их вручную. Если агент был запущен, перезапусти его."
         } else {
             "Не получилось прочитать файл — похоже, это не бэкап VoiceAgent."
         }
@@ -546,7 +546,13 @@ private fun ProjectSecretRow(label: String, value: String, context: Context) {
         subtitle = "Нажмите, чтобы скопировать",
         onClick = {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+            val clip = ClipData.newPlainText(label, value)
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                clip.description.extras = android.os.PersistableBundle().apply {
+                    putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+                }
+            }
+            clipboard.setPrimaryClip(clip)
         },
         trailing = { Icon(VaIcons.Copy, contentDescription = "Скопировать", modifier = Modifier.size(20.dp)) }
     )

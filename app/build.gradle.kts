@@ -34,7 +34,7 @@ android {
     buildTypes {
         create("recovery") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".accelerated"
+            applicationIdSuffix = ".safefix"
             matchingFallbacks += listOf("debug")
         }
         release {

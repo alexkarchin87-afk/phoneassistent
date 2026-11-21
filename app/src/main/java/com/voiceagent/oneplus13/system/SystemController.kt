@@ -116,7 +116,8 @@ class SystemController(private val context: Context) {
         if (!mediaSessionReader.hasActiveSession(YANDEX_MUSIC_PACKAGE)) return false
         openApp(YANDEX_MUSIC_PACKAGE)
         delay(YANDEX_MUSIC_FOREGROUND_DELAY_MS) // дать экрану открыться/перерисоваться перед поиском кнопки
-        return LIKE_LABEL_CANDIDATES.any { tapByText(it) }
+        val service = AccessibilityAgent.instance ?: return false
+        return LIKE_LABEL_CANDIDATES.any { service.tapByExactText(it) }
     }
 
     /**
@@ -157,12 +158,12 @@ class SystemController(private val context: Context) {
     }
 
     private fun openPlayStoreListing(appName: String) {
-        val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=$appName"))
+        val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search").buildUpon().appendQueryParameter("q", appName).build())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         if (marketIntent.resolveActivity(context.packageManager) != null) {
             context.startActivity(marketIntent)
         } else {
-            openUrl("https://play.google.com/store/search?q=$appName")
+            openUrl(Uri.parse("https://play.google.com/store/search").buildUpon().appendQueryParameter("q", appName).toString())
         }
     }
 
@@ -226,11 +227,9 @@ class SystemController(private val context: Context) {
         // пробуем несколько вариантов подряд, а не полагаемся на один точный текст.
         private val LIKE_LABEL_CANDIDATES = listOf(
             "Добавить в Мне нравится",
-            "Мне нравится",
-            "Убрать из Мне нравится",
             "Добавить в избранное",
-            "Like",
-            "Favorite"
+            "Add to favorites",
+            "Add to favourites"
         )
     }
 }

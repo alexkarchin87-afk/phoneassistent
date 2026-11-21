@@ -6,6 +6,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.channels.Channel
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -59,14 +60,14 @@ class STTEngine(private val context: Context) {
             }
 
             override fun onResult(hypothesis: String?) {
-                val text = hypothesis?.let { JSONObject(it).optString("text") }.orEmpty()
+                val text = hypothesis?.let { runCatching { JSONObject(it).optString("text") }.getOrDefault("") }.orEmpty()
                 if (!acceptTranscript()) contaminated = true
                 if (text.isNotBlank() && !contaminated) trySend(text)
                 contaminated = false
             }
 
             override fun onFinalResult(hypothesis: String?) {
-                val text = hypothesis?.let { JSONObject(it).optString("text") }.orEmpty()
+                val text = hypothesis?.let { runCatching { JSONObject(it).optString("text") }.getOrDefault("") }.orEmpty()
                 if (!acceptTranscript()) contaminated = true
                 if (text.isNotBlank() && !contaminated) trySend(text)
                 contaminated = false
@@ -93,7 +94,7 @@ class STTEngine(private val context: Context) {
             recognizer.close()
             if (speechService === service) speechService = null
         }
-    }.buffer(0)
+    }.buffer(Channel.BUFFERED)
 
     /** Vosk continues reading audio while paused, but avoids recognition work. */
     fun setSpeechOutputActive(active: Boolean) {

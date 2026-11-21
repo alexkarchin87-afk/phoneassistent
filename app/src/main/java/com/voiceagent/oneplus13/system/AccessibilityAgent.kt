@@ -79,6 +79,25 @@ class AccessibilityAgent : AccessibilityService() {
         return clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 
+    /** Exact labels avoid selecting an inverse action that merely contains a word. */
+    fun tapByExactText(label: String): Boolean {
+        val cleanLabel = label.trim()
+        if (cleanLabel.isEmpty()) return false
+        val root = rootInActiveWindow ?: return false
+        val target = findExactNode(root, cleanLabel) ?: return false
+        return (nearestClickableAncestor(target) ?: target).performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
+    private fun findExactNode(node: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
+        if (node.text?.toString()?.trim()?.equals(label, ignoreCase = true) == true ||
+            node.contentDescription?.toString()?.trim()?.equals(label, ignoreCase = true) == true) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            findExactNode(child, label)?.let { return it }
+        }
+        return null
+    }
+
     private fun nearestClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var current: AccessibilityNodeInfo? = node
         var depth = 0

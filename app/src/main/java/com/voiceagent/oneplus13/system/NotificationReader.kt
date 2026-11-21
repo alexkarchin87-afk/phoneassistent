@@ -5,12 +5,12 @@ import android.app.RemoteInput
 import android.content.Intent
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.voiceagent.oneplus13.core.AgentEvent
-import com.voiceagent.oneplus13.core.AgentEventBus
 import com.voiceagent.oneplus13.core.security.SecretsStore
 import com.voiceagent.oneplus13.integrations.messenger.TokenCapture
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
  */
 class NotificationReader : NotificationListenerService() {
 
-    private val scope = CoroutineScope(Job())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var tokenCapture: TokenCapture
 
     /** Последнее уведомление с доступным быстрым ответом на отправителя (ключ —
@@ -46,8 +46,16 @@ class NotificationReader : NotificationListenerService() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
+        replyableBySender.clear()
         if (instance === this) instance = null
         super.onDestroy()
+    }
+
+    override fun onListenerDisconnected() {
+        replyableBySender.clear()
+        if (instance === this) instance = null
+        super.onListenerDisconnected()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -59,6 +67,7 @@ class NotificationReader : NotificationListenerService() {
         if (sbn.packageName in REPLY_PACKAGES && !SENSITIVE.containsMatchIn("$title $text")
             && findReplyAction(sbn) != null) {
             replyableBySender[sbn.key] = sbn
+            if (replyableBySender.size > 100) replyableBySender.keys.firstOrNull()?.let { replyableBySender.remove(it) }
         }
 
         scope.launch {
@@ -77,16 +86,6 @@ class NotificationReader : NotificationListenerService() {
 
             NotificationBuffer.record(NotificationEntry(sbn.packageName, title, text))
 
-            AgentEventBus.publish(
-                AgentEvent.ActionRequested(
-                    action = "notification_received",
-                    params = mapOf(
-                        "package" to sbn.packageName,
-                        "title" to title,
-                        "text" to text
-                    )
-                )
-            )
         }
     }
 
@@ -135,7 +134,7 @@ class NotificationReader : NotificationListenerService() {
         private val SENSITIVE = Regex("(?i)(код|парол|банк|карт[аы]|плат[её]ж|otp|password|verification|\\b[0-9]{4,8}\\b)")
         /** Живой экземпляр запущенного слушателя — так же, как AccessibilityAgent.instance,
          *  чтобы AgentOrchestrator мог дёрнуть replyTo() без биндинга сервиса. */
-        var instance: NotificationReader? = null
+        @Volatile var instance: NotificationReader? = null
     }
 }
 
@@ -143,6 +142,6 @@ class NotificationReader : NotificationListenerService() {
  *  project that needs a bot token, so NotificationReader knows which project a
  *  freshly-seen BotFather token belongs to. Cleared once the token is consumed. */
 object PendingProject {
-    var awaitingTokenFor: String? = null
+    @Volatile var awaitingTokenFor: String? = null
 }
 

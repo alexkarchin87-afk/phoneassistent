@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 
 /**
  * Client for Meta's official WhatsApp Business Cloud API. Deliberately does NOT use
@@ -28,9 +29,8 @@ class WhatsAppClient(
         .build()
 
     suspend fun sendMessage(toE164: String, text: String) = withContext(Dispatchers.IO) {
-        val json = """
-            {"messaging_product":"whatsapp","to":"$toE164","type":"text","text":{"body":${escapeJson(text)}}}
-        """.trimIndent()
+        val json = JSONObject().put("messaging_product", "whatsapp").put("to", toE164)
+            .put("type", "text").put("text", JSONObject().put("body", text)).toString()
         val body = json.toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("https://graph.facebook.com/$apiVersion/$phoneNumberId/messages")
@@ -40,6 +40,4 @@ class WhatsAppClient(
         http.newCall(request).execute().use { it.isSuccessful }
     }
 
-    private fun escapeJson(text: String): String =
-        "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
 }

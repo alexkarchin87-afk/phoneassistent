@@ -26,8 +26,6 @@ import com.voiceagent.oneplus13.workflow.WorkflowRunner
 import com.voiceagent.oneplus13.workflow.WorkflowStorage
 import com.voiceagent.oneplus13.workflow.Workflow
 import com.voiceagent.oneplus13.workflow.describeWorkflowForConfirmation
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -79,13 +77,10 @@ class AgentOrchestrator(
     private var pendingCodeChoice: PendingCodeChoice? = null
 
     init {
-        // Listen for events raised outside a direct voice command (e.g. TokenCapture
-        // spotting a BotFather message) and turn them into a spoken confirmation.
-        AgentEventBus.events.onEach { event ->
-            if (event is AgentEvent.ActionRequested && event.action == "botfather_token_found") {
-                conversationMutex.withLock { handleExternalEvent(event) }
-            }
-        }.launchIn(scope)
+        // Do not block the shared-flow collector on a mutex held by a publisher.
+        // A bounded conflated mailbox is sufficient: only the latest pending token
+        // for a project can be applied, and the secret itself stays in the store.
+        scope.bridgeTokenEvents(AgentEventBus.events, conversationMutex) { handleExternalEvent(it) }
     }
 
     private fun buildSystemPrompt(): String {
@@ -198,6 +193,7 @@ class AgentOrchestrator(
 
     private suspend fun handleTranscriptLocked(text: String) {
         if (pendingConfirmation?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) {
+            pendingConfirmation?.takeIf { it.action == "apply_captured_token" }?.params?.get("project")?.let { tokenCapture.consumePendingToken(it) }
             pendingConfirmation = null
         }
         if (pendingCodeChoice?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) {
@@ -210,9 +206,20 @@ class AgentOrchestrator(
                     AgentEventBus.publish(AgentEvent.ActionRequested(
                         pending.action, pending.params.filterKeys { !it.startsWith("_") }
                     ))
-                    dispatch(pending.action, pending.params)
+                    try {
+                        dispatch(pending.action, pending.params)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (t: Throwable) {
+                        val message = friendlyAssistantError(t)
+                        AgentEventBus.publish(AgentEvent.Error(message, t))
+                        tts.speak(message)
+                    }
                 }
-                false -> { pendingConfirmation = null; tts.speak("Хорошо, отменено.") }
+                false -> {
+                    pendingConfirmation = null
+                    if (pending.action == "apply_captured_token") pending.params["project"]?.let { tokenCapture.consumePendingToken(it) }
+                    tts.speak("Хорошо, отменено.")
+                }
                 null -> tts.speak("Скажи «да» или «отмена».")
             }
             return
@@ -308,14 +315,16 @@ class AgentOrchestrator(
     private suspend fun handleExternalEvent(event: AgentEvent) {
         if (event !is AgentEvent.ActionRequested) return
         if (event.action != "botfather_token_found") return
+        if (pendingConfirmation?.expiresAt?.let { SystemClock.elapsedRealtime() > it } == true) pendingConfirmation = null
         if (pendingConfirmation != null) return
 
         val project = event.params["project"] ?: return
+        if (project != PendingProject.awaitingTokenFor) return
         val masked = event.params["masked_token"] ?: "токен"
         pendingConfirmation = PendingConfirmation(
             action = "apply_captured_token",
             params = mapOf("project" to project),
-            question = "Похоже, BotFather прислал токен ($masked) для проекта \"$project\". Использовать его?"
+            question = "В уведомлении с именем BotFather найден токен ($masked) для проекта \"$project\". Проверь отправителя в Telegram. Использовать токен?"
         )
         tts.speak(pendingConfirmation!!.question)
     }
@@ -757,7 +766,8 @@ class AgentOrchestrator(
         tts.speak("Собираю сценарий, секунду.")
         val workflow = try {
             workflowAiBuilder.build(description)
-        } catch (t: Throwable) {
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (t: Throwable) {
             tts.speak("Не получилось собрать сценарий — попробуй описать проще или собери руками в Мастерской.")
             return
         }

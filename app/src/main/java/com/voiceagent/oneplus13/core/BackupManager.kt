@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
-import com.voiceagent.oneplus13.core.security.SecretsStore
 import com.voiceagent.oneplus13.ui.FormFactorOverride
 import com.voiceagent.oneplus13.ui.UiPreferences
 import org.json.JSONArray
@@ -12,26 +11,10 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Экспорт/импорт настроек одним файлом при смене телефона: ключи API (DeepSeek,
- * Claude), выбор модели, найденные секреты сгенерированных проектов, факты из
- * UserMemory ("запомни, что...", с сохранением приоритета P1/"навсегда") и
- * выбор интерфейса (UiPreferences).
- *
- * Сознательно НЕ включает: Google-аккаунт и роли Admin/User (они свяжутся сами
- * заново при входе на новом телефоне через AccountManager — роль зависит от
- * того, какой аккаунт первым войдёт на НОВОМ телефоне, это осознанно не
- * переносится файлом) и историю самих разговоров (она и так не хранится
- * дольше текущей сессии).
- *
- * Файл — обычный JSON. Это по сути копия твоих ключей в открытом виде, так что
- * делиться им стоит так же осторожно, как самими паролями (AirDrop/USB-кабель
- * на новый телефон — безопаснее, чем публичный чат). Приложение только
- * формирует файл и открывает системную шторку "Поделиться" — куда его
- * отправить, решает пользователь.
+ * Explicit JSON export of user memory and UI preferences. API keys and bot
+ * credentials are never exported or silently restored from legacy files.
  */
 class BackupManager(private val context: Context) {
-
-    private val secrets = SecretsStore(context)
 
     fun exportBackup(): File {
         val root = JSONObject()
@@ -70,12 +53,8 @@ class BackupManager(private val context: Context) {
     fun importBackup(file: File): Boolean = runCatching {
         val root = JSONObject(file.readText())
 
-        root.optJSONObject("secrets")?.let { obj ->
-            obj.keys().forEach { key -> secrets.put(key, obj.getString(key)) }
-        }
-        root.optJSONObject("project_secrets")?.let { obj ->
-            obj.keys().forEach { key -> secrets.put(key, obj.getString(key)) }
-        }
+        // Legacy backups may contain plaintext secrets. Never silently overwrite
+        // the current bot owner or API credentials with untrusted file content.
 
         val memory = UserMemory(context)
         val factsV2 = root.optJSONArray("memory_facts_v2")

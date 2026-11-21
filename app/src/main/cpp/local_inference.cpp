@@ -46,12 +46,17 @@ static void release_model() {
     if (backend_ready) { llama_backend_free(); backend_ready = false; }
 }
 static bool abort_decode(void *) { return cancelled.load(); }
+static bool continue_load(float, void *) { return !cancelled.load(); }
 static void log_errors(ggml_log_level level, const char *text, void *) {
     if (level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN)
         __android_log_write(ANDROID_LOG_WARN, "VoiceAgentLocal", text);
 }
 static void fail(JNIEnv *env, const char *message) {
-    env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message);
+    if (env->ExceptionCheck()) return;
+    jclass cls = env->FindClass("java/lang/IllegalStateException");
+    if (!cls) return;
+    env->ThrowNew(cls, message);
+    env->DeleteLocalRef(cls);
 }
 static std::string bytes(JNIEnv *env, jbyteArray arr) {
     const auto size = env->GetArrayLength(arr);
@@ -83,6 +88,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeLastRunStats(JNIEnv *en
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, jobject, jstring jpath, jstring jkey, jint input_fd, jobjectArray jroles, jobjectArray jcontents, jint requested_tokens, jboolean thoughtful, jboolean arm_acceleration) {
     const auto started = Clock::now();
+    if (!jpath || !jkey) { fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr; }
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return nullptr;
     const std::string model_path(path);
@@ -95,6 +101,7 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
     llama_log_set(log_errors, nullptr);
     auto params = llama_model_default_params();
     params.n_gpu_layers = 0;
+    params.progress_callback = continue_load;
 #if defined(__aarch64__)
     // Extra buffers repack supported weights for KleidiAI; OFF preserves the generic path.
     params.use_extra_bufts = arm_acceleration;
@@ -119,22 +126,30 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
         llama_backend_init();
         backend_ready = true;
         cached_model.reset(input ? llama_model_load_from_file_ptr(input.get(), params) : llama_model_load_from_file(model_path.c_str(), params));
-        ++model_load_count;
+        if (cached_model) ++model_load_count;
         cached_key = identity;
     }
     auto &model = cached_model;
-    if (!model) { fail(env, "LOCAL_MODEL_LOAD_FAILED"); return nullptr; }
+    if (!model) { fail(env, cancelled ? "LOCAL_CANCELLED" : "LOCAL_MODEL_LOAD_FAILED"); return nullptr; }
     const auto loaded = Clock::now();
     if (cancelled) { fail(env, "LOCAL_CANCELLED"); return nullptr; }
+    if (!jroles || !jcontents) { fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr; }
     const auto count = env->GetArrayLength(jroles);
     if (count <= 0 || count != env->GetArrayLength(jcontents) || count > 8) { fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr; }
     std::vector<std::string> roles, contents;
     roles.reserve(count); contents.reserve(count);
     for (int i = 0; i < count; ++i) {
         auto role = static_cast<jbyteArray>(env->GetObjectArrayElement(jroles, i));
+        if (!role || env->ExceptionCheck()) { fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr; }
         auto content = static_cast<jbyteArray>(env->GetObjectArrayElement(jcontents, i));
+        if (!content || env->ExceptionCheck()) {
+            env->DeleteLocalRef(role);
+            if (content) env->DeleteLocalRef(content);
+            fail(env, "LOCAL_INVALID_MESSAGES"); return nullptr;
+        }
         roles.push_back(bytes(env, role)); contents.push_back(bytes(env, content));
         env->DeleteLocalRef(role); env->DeleteLocalRef(content);
+        if (env->ExceptionCheck()) return nullptr;
     }
     std::vector<llama_chat_message> messages;
     for (int i = 0; i < count; ++i) messages.push_back({roles[i].c_str(), contents[i].c_str()});
@@ -193,10 +208,15 @@ Java_com_voiceagent_oneplus13_local_LocalInference_nativeGenerate(JNIEnv *env, j
         auto token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
         if (llama_vocab_is_eog(vocab, token)) break;
         ++generated_tokens;
-        char buf[256];
-        const int length = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, true);
+        std::vector<char> piece(256);
+        int length = llama_token_to_piece(vocab, token, piece.data(), piece.size(), 0, true);
+        if (length < 0) {
+            if (length < -1048576) { fail(env, "LOCAL_TOKEN_FAILED"); return nullptr; }
+            piece.resize(static_cast<size_t>(-length));
+            length = llama_token_to_piece(vocab, token, piece.data(), piece.size(), 0, true);
+        }
         if (length < 0) { fail(env, "LOCAL_TOKEN_FAILED"); return nullptr; }
-        output.append(buf, length);
+        output.append(piece.data(), length);
         if (i + 1 == max_new) break; // No next token will be sampled from these logits.
         if (llama_decode(ctx.get(), llama_batch_get_one(&token, 1)) != 0) {
             fail(env, cancelled ? "LOCAL_CANCELLED" : "LOCAL_DECODE_FAILED"); return nullptr;

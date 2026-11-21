@@ -71,12 +71,13 @@ import kotlinx.coroutines.launch
  * [WorkflowAiBuilder] (DeepSeek-R1 + проверка Claude).
  */
 class WorkflowEditorActivity : ComponentActivity() {
+    private var speech: TTSEngine? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val storage = WorkflowStorage(this)
         val aiBuilder = WorkflowAiBuilder(LLMClient(this))
-        val runner = WorkflowRunner(SystemController(this), TTSEngine(this))
+        val runner = WorkflowRunner(SystemController(this), TTSEngine(this).also { speech = it })
 
         setContent {
             VoiceAgentTheme {
@@ -90,6 +91,12 @@ class WorkflowEditorActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        speech?.shutdown()
+        speech = null
+        super.onDestroy()
     }
 }
 

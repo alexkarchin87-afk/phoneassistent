@@ -142,7 +142,7 @@ jobs:
           disable-animations: true
           script: |
             python3 scripts/android_smoke.py smoke-apk/app-debug.apk
-            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.accelerated python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
+            VOICEAGENT_PACKAGE=com.voiceagent.oneplus13.safefix python3 scripts/android_smoke.py recovery-apk/app-recovery.apk
             adb shell run-as com.voiceagent.oneplus13 ls files/smoke_data_kept
             adb push tiny.gguf /data/local/tmp/voiceagent-tiny.gguf
             adb shell run-as com.voiceagent.oneplus13 cp /data/local/tmp/voiceagent-tiny.gguf files/tiny.gguf
@@ -151,4 +151,4 @@ jobs:
             adb shell rm /data/local/tmp/voiceagent-qwen35.gguf
             adb install -r local-tests/app-debug-androidTest.apk
             adb shell am instrument -w com.voiceagent.oneplus13.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.log
-            grep -F "OK (2 tests)" instrument.log || { adb logcat -d -v brief | tail -250; exit 1; }
+            grep -F "OK (3 tests)" instrument.log || { adb logcat -d -v brief | tail -250; exit 1; }
