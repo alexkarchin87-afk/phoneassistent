@@ -179,8 +179,8 @@ class SystemController(private val context: Context) {
         val file = File(dir, "download_${System.currentTimeMillis()}.apk")
         // Check each DNS result at connection time and every redirect; do not let a
         // model-supplied URL address local services or an HTTPS-to-HTTP redirect.
-        val dns = Dns { hostname ->
-            Dns.SYSTEM.lookup(hostname).also { addresses ->
+        val dns = object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> = Dns.SYSTEM.lookup(hostname).also { addresses ->
                 if (addresses.isEmpty() || addresses.any { !isPublicDownloadAddress(it) })
                     throw UnknownHostException("Local download address is not allowed")
             }
