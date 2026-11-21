@@ -53,7 +53,12 @@ jobs:
       - name: Test model preparation
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
-      - name: Test backend HTTP security
+      - name: Set up Python for backend tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run backend HTTP security tests
         run: |
           python3 -m pip install -r backend/requirements.txt httpx==0.27.2
           python3 -m unittest discover -s backend -p 'test_*.py' -v
