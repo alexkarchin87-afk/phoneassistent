@@ -60,6 +60,9 @@ import com.voiceagent.oneplus13.workflow.WorkflowConnection
 import com.voiceagent.oneplus13.workflow.WorkflowRunner
 import com.voiceagent.oneplus13.workflow.WorkflowStorage
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * "Мастерская сценариев" — визуальный no-code редактор поверх тех же
@@ -181,9 +184,11 @@ private fun WorkflowListScreen(
                         scope.launch {
                             try {
                                 val wf = aiBuilder.build(description)
-                                storage.save(wf)
+                                withContext(Dispatchers.IO) { storage.save(wf) }
                                 aiDescription = ""
                                 onCreated(wf)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
                             } catch (t: Throwable) {
                                 buildError = "Не получилось собрать: ${t.message ?: "ошибка ИИ"}. Можно собрать руками — жми \"+ Новый сценарий\"."
                             } finally {
@@ -249,6 +254,7 @@ private fun WorkflowCanvasScreen(
     var editingBlock by remember { mutableStateOf<WorkflowBlock?>(null) }
     var showAddPicker by remember { mutableStateOf(false) }
     var runStatus by remember { mutableStateOf<String?>(null) }
+    var isRunning by remember { mutableStateOf(false) }
 
     fun currentWorkflow() = Workflow(workflow.id, name, triggerPhrase.ifBlank { null }, blocks.toMutableList(), connections.toMutableList())
 
@@ -357,23 +363,39 @@ private fun WorkflowCanvasScreen(
                 Text("+ Блок")
             }
             Button(
+                enabled = !isRunning,
                 onClick = {
                     val wf = currentWorkflow()
-                    storage.save(wf)
+                    // Detach mutable block parameters from edits while the scenario runs.
+                    val snapshot = wf.copy(blocks = wf.blocks.map { it.copy(params = it.params.toMutableMap()) }.toMutableList())
+                    isRunning = true
                     runStatus = "Выполняю..."
                     scope.launch {
-                        runner.run(wf) { step ->
-                            runStatus = when (step) {
-                                is WorkflowRunner.StepResult.Started -> "Шаг: ${step.block.type.displayName}"
-                                is WorkflowRunner.StepResult.Finished -> "Готово (${step.stepsRun} шаг(ов))"
-                                is WorkflowRunner.StepResult.Failed -> "Остановился: ${step.reason}"
+                        try {
+                            withContext(Dispatchers.IO) {
+                                storage.save(snapshot)
+                                runner.run(snapshot) { step ->
+                                    withContext(Dispatchers.Main) {
+                                        runStatus = when (step) {
+                                            is WorkflowRunner.StepResult.Started -> "Шаг: ${step.block.type.displayName}"
+                                            is WorkflowRunner.StepResult.Finished -> "Готово (${step.stepsRun} шаг(ов))"
+                                            is WorkflowRunner.StepResult.Failed -> "Остановился: ${step.reason}"
+                                        }
+                                    }
+                                }
                             }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            runStatus = "Не удалось выполнить сценарий."
+                        } finally {
+                            isRunning = false
                         }
                     }
                 },
                 modifier = Modifier.weight(1f)
             ) {
-                Text("Запустить сейчас")
+                Text(if (isRunning) "Выполняю..." else "Запустить сейчас")
             }
         }
     }
