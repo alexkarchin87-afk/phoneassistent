@@ -69,6 +69,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.voiceagent.oneplus13.local.LocalModelSection
@@ -98,17 +101,36 @@ class SettingsActivity : ComponentActivity() {
 
     private val importLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@registerForActivityResult
-        val tmp = File(cacheDir, "voiceagent_import.json")
-        val ok = try { runCatching {
-            contentResolver.openInputStream(uri)?.use { input ->
-                tmp.outputStream().use { output -> input.copyTo(output) }
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                val tmp = try { File.createTempFile("voiceagent_import_", ".json", cacheDir) }
+                    catch (_: Exception) { return@withContext false }
+                try {
+                    val input = contentResolver.openInputStream(uri) ?: return@withContext false
+                    input.use { source ->
+                        tmp.outputStream().use { output ->
+                            val buf = ByteArray(8192)
+                            var total = 0L
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+                                val read = source.read(buf)
+                                if (read < 0) break
+                                total += read
+                                require(total <= 5L * 1024 * 1024) { "Backup is too large" }
+                                output.write(buf, 0, read)
+                            }
+                        }
+                    }
+                    BackupManager(applicationContext).importBackup(tmp)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { false }
+                finally { tmp.delete() }
             }
-            BackupManager(this).importBackup(tmp)
-        }.getOrDefault(false) } finally { tmp.delete() }
-        importMessage = if (ok) {
-            "Настройки импортированы. API-ключи и токены из файла не восстанавливаются — введи их вручную. Если агент был запущен, перезапусти его."
-        } else {
-            "Не получилось прочитать файл — похоже, это не бэкап VoiceAgent."
+            importMessage = if (ok) {
+                "Настройки импортированы. API-ключи и токены из файла не восстанавливаются — введи их вручную. Если агент был запущен, перезапусти его."
+            } else {
+                "Не получилось прочитать файл — проверь формат и размер (до 5 МБ)."
+            }
         }
     }
 
